@@ -6,15 +6,33 @@
   <title>RFID Button Tracker</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
-    body{font-family:system-ui,Arial;padding:20px;max-width:900px;margin:auto}
-    .row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    :root{--gap:12px}
+    body{font-family:system-ui,Arial;padding:20px;max-width:1100px;margin:auto}
+    h2{margin-bottom:10px}
+    .row{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:var(--gap);align-items:center}
     select,input,button{padding:8px}
-    canvas{max-width:100%; height:380px}
+    input[type="text"]{min-width:260px}
+    canvas{max-width:100%;height:380px}
+    .card{border:1px solid #ddd;border-radius:10px;padding:14px;margin:16px 0}
+    .card h3{margin:0 0 10px 0;font-size:18px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
+    .hint{font-size:12px;color:#666}
+    .msg{padding:8px 10px;border-radius:8px;font-size:14px;display:none;margin-left:8px}
+    .msg.ok{background:#e6ffed;border:1px solid #b7f5c6;color:#0a6d2e;display:inline-block}
+    .msg.err{background:#ffecec;border:1px solid #ffbcbc;color:#941414;display:inline-block}
+    table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
+    th,td{border-bottom:1px solid #eee;padding:8px 6px;text-align:left}
+    tr:hover{background:#fafafa}
+    .btn{cursor:pointer;border:1px solid #ccc;border-radius:8px;background:#fff}
+    .btn.primary{background:#0d6efd;color:#fff;border-color:#0d6efd}
+    .btn.small{padding:6px 10px;font-size:13px}
+    @media (max-width:900px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
   <h2>RFID Button Press – Dashboard</h2>
 
+  <!-- Bộ lọc & biểu đồ -->
   <div class="row">
     <label>Người dùng:</label>
     <select id="userSelect"></select>
@@ -22,25 +40,71 @@
     <input type="date" id="fromDate"/>
     <label>Đến ngày:</label>
     <input type="date" id="toDate"/>
-    <button id="loadBtn">Tải dữ liệu</button>
+    <button id="loadBtn" class="btn">Tải dữ liệu</button>
   </div>
 
   <canvas id="chart"></canvas>
 
+  <!-- Quản lý Người dùng -->
+  <div class="card">
+    <h3>Quản lý người dùng (gắn tên cho UID)</h3>
+    <div class="grid">
+      <div>
+        <div class="row" style="align-items:flex-start">
+          <div>
+            <div class="row">
+              <label style="min-width:80px">UID:</label>
+              <input type="text" id="uidInput" placeholder="VD: 04781E949A7481"/>
+            </div>
+            <div class="row">
+              <label style="min-width:80px">Tên:</label>
+              <input type="text" id="nameInput" placeholder="VD: User A"/>
+            </div>
+            <div class="row">
+              <label style="min-width:80px">Email:</label>
+              <input type="text" id="emailInput" placeholder="(không bắt buộc)"/>
+            </div>
+            <div class="row">
+              <button id="saveUserBtn" class="btn primary">Lưu user</button>
+              <span id="saveMsg" class="msg"></span>
+            </div>
+            <div class="hint">Mẹo: copy UID từ Serial Monitor của ESP32 rồi dán vào đây.</div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <strong>Danh sách user</strong>
+        <table id="usersTable">
+          <thead>
+            <tr><th>UID</th><th>Tên</th><th>Email</th><th>Hành động</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
 <script>
   const API = location.origin;
+
+  // --- Phần biểu đồ & lọc ---
   const userSelect = document.getElementById('userSelect');
-  const fromDate = document.getElementById('fromDate');
-  const toDate = document.getElementById('toDate');
-  const loadBtn = document.getElementById('loadBtn');
+  const fromDate   = document.getElementById('fromDate');
+  const toDate     = document.getElementById('toDate');
+  const loadBtn    = document.getElementById('loadBtn');
   let chart, usersCache = [];
 
   async function loadUsers() {
     const res = await fetch(`${API}/api/users`);
     const users = await res.json();
-    usersCache = users; // lưu để map uid -> name
+    usersCache = users;
+
+    // Dropdown
     userSelect.innerHTML = `<option value="">-- Tất cả --</option>` +
-      users.map(u => `<option value="${u.uid}">${u.name} (${u.uid})</option>`).join('');
+      users.map(u => `<option value="${u.uid}">${u.name}</option>`).join('');
+
+    // Bảng users
+    renderUsersTable(users);
   }
 
   function nameOf(uid) {
@@ -51,36 +115,26 @@
   async function loadStats() {
     const params = new URLSearchParams();
     if (fromDate.value) params.set('from', fromDate.value);
-    if (toDate.value) params.set('to', toDate.value);
+    if (toDate.value)   params.set('to', toDate.value);
 
-    // Nếu chọn 1 user -> gọi API cũ (theo ngày)
     if (userSelect.value) {
       params.set('uid', userSelect.value);
       const res = await fetch(`${API}/api/events/stats/daily?` + params.toString());
-      const data = await res.json(); // [{_id:'YYYY-MM-DD', count:n}, ...]
+      const data = await res.json();
       drawSingleUser(data, nameOf(userSelect.value));
       return;
     }
 
-    // Nếu chọn "Tất cả" -> gọi API mới (ngày + uid)
     const res = await fetch(`${API}/api/events/stats/daily-by-user?` + params.toString());
-    const raw = await res.json(); // [{_id:{day, uid}, count}, ...]
+    const raw = await res.json();
 
-    // labels = danh sách ngày
     const labels = Array.from(new Set(raw.map(r => r._id.day))).sort();
-    // danh sách uid
-    const uids = Array.from(new Set(raw.map(r => r._id.uid))).sort();
+    const uids   = Array.from(new Set(raw.map(r => r._id.uid))).sort();
 
-    // build dataset cho từng uid
     const datasets = uids.map(uid => {
       const map = new Map(raw.filter(r => r._id.uid === uid).map(r => [r._id.day, r.count]));
       const arr = labels.map(day => map.get(day) || 0);
-      return {
-        label: nameOf(uid) + ` (${uid})`,
-        data: arr,
-        // để Chart.js tự màu; không set color theo yêu cầu mặc định
-        stack: 'users'
-      };
+      return { label: nameOf(uid) + ` (${uid})`, data: arr, stack: 'users' };
     });
 
     if (chart) chart.destroy();
@@ -106,14 +160,8 @@
     const ctx = document.getElementById('chart').getContext('2d');
     chart = new Chart(ctx, {
       type: 'bar',
-      data: {
-        labels,
-        datasets: [{ label: `Số lần bấm – ${label}`, data: values }]
-      },
-      options: {
-        responsive: true,
-        scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
-      }
+      data: { labels, datasets: [{ label: `Số lần bấm – ${label}`, data: values }] },
+      options: { responsive: true, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } }
     });
   }
 
@@ -125,7 +173,116 @@
 
   loadUsers().then(loadStats);
   loadBtn.addEventListener('click', loadStats);
-  userSelect.addEventListener('change', loadStats); // đổi user là vẽ lại
+  userSelect.addEventListener('change', loadStats);
+
+  // --- Phần quản lý user ---
+  const uidInput   = document.getElementById('uidInput');
+  const nameInput  = document.getElementById('nameInput');
+  const emailInput = document.getElementById('emailInput');
+  const saveBtn    = document.getElementById('saveUserBtn');
+  const saveMsg    = document.getElementById('saveMsg');
+  const usersTableBody = document.querySelector('#usersTable tbody');
+
+  function showMsg(text, ok=true){
+    saveMsg.textContent = text;
+    saveMsg.className = 'msg ' + (ok ? 'ok':'err');
+    setTimeout(()=>{ saveMsg.className='msg'; }, 2500);
+  }
+function renderUsersTable(users){
+  usersTableBody.innerHTML = users.map(u => `
+    <tr>
+      <td>${u.uid}</td>
+      <td>${u.name||''}</td>
+      <td>${u.email||''}</td>
+      <td style="white-space:nowrap">
+        <button class="btn small" data-edit="${u.uid}">Chọn để sửa</button>
+        <button class="btn small" data-del="${u.uid}" style="margin-left:6px">Xóa</button>
+      </td>
+    </tr>
+  `).join('');
+
+  // gắn click cho "Chọn để sửa"
+  usersTableBody.querySelectorAll('button[data-edit]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const uid = btn.getAttribute('data-edit');
+      const user = usersCache.find(x=>x.uid===uid);
+      if (user){
+        uidInput.value = user.uid;
+        nameInput.value = user.name||'';
+        emailInput.value = user.email||'';
+        uidInput.focus();
+      }
+    });
+  });
+
+  // gắn click cho "Xóa"
+  usersTableBody.querySelectorAll('button[data-del]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const uid = btn.getAttribute('data-del');
+      const user = usersCache.find(x=>x.uid===uid);
+      const label = user ? `${user.name} (${user.uid})` : uid;
+      if (!confirm(`Xóa user: ${label}? Hành động này không thể hoàn tác.`)) return;
+
+      try{
+        const res = await fetch(`${API}/api/users/${encodeURIComponent(uid)}`, { method:'DELETE' });
+        if(!res.ok){
+          const err = await res.json().catch(()=>({message:res.statusText}));
+          alert('Lỗi: ' + (err.message||res.statusText));
+          return;
+        }
+        // Nếu đang lọc đúng user vừa xóa, chuyển dropdown về "Tất cả"
+        if (userSelect.value === uid) userSelect.value = '';
+        await loadUsers();  // reload danh sách + dropdown
+        await loadStats();  // vẽ lại biểu đồ
+      }catch(e){
+        alert('Lỗi kết nối server khi xóa user');
+      }
+    });
+  });
+}
+    // gắn click cho nút "Chọn để sửa"
+    usersTableBody.querySelectorAll('button[data-edit]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        const uid = btn.getAttribute('data-edit');
+        const user = usersCache.find(x=>x.uid===uid);
+        if (user){
+          uidInput.value = user.uid;
+          nameInput.value = user.name||'';
+          emailInput.value = user.email||'';
+          uidInput.focus();
+        }
+      });
+    });
+
+  saveBtn.addEventListener('click', async ()=>{
+    const uid = (uidInput.value||'').trim().toUpperCase();
+    const name = (nameInput.value||'').trim();
+    const email = (emailInput.value||'').trim();
+
+    if (!uid || !name){
+      showMsg('Vui lòng nhập UID và Tên', false);
+      return;
+    }
+
+    try{
+      const res = await fetch(`${API}/api/users`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ uid, name, email: email || undefined })
+      });
+      if(!res.ok){
+        const err = await res.json().catch(()=>({message:res.statusText}));
+        showMsg('Lỗi: ' + (err.message||res.statusText), false);
+        return;
+      }
+      showMsg('Đã lưu user');
+      uidInput.value=''; nameInput.value=''; emailInput.value='';
+      await loadUsers();   // reload danh sách + dropdown
+      await loadStats();   // vẽ lại biểu đồ cho chắc
+    }catch(e){
+      showMsg('Lỗi kết nối server', false);
+    }
+  });
 </script>
 
 </body>
