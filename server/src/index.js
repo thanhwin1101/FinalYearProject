@@ -10,14 +10,22 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // cho phép form-urlencoded
+
+// Log request đơn giản
+app.use((req, _res, next) => {
+  console.log('[REQ]', req.method, req.url);
+  next();
+});
 
 app.use('/api/users', usersRouter);
 app.use('/api/events', eventsRouter);
 
-// Serve dashboard tĩnh (đặt file index.html trong /public)
+// Serve dashboard tĩnh
 app.use(express.static('public'));
 
 const port = process.env.PORT || 3000;
+
 connectDB().then(() => {
-  app.listen(port, () => console.log('Server running on port', port));
+  app.listen(port, '0.0.0.0', () => console.log('Server running on', port));
 });

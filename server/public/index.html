@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>RFID Button Tracker</title>
+  <title>Final Year Project</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     :root{--gap:12px}
@@ -26,6 +26,7 @@
     .btn{cursor:pointer;border:1px solid #ccc;border-radius:8px;background:#fff}
     .btn.primary{background:#0d6efd;color:#fff;border-color:#0d6efd}
     .btn.small{padding:6px 10px;font-size:13px}
+    .danger{color:#b00020;border-color:#f3c0c0}
     @media (max-width:900px){.grid{grid-template-columns:1fr}}
   </style>
 </head>
@@ -45,33 +46,37 @@
 
   <canvas id="chart"></canvas>
 
-  <!-- Quản lý Người dùng -->
+  <!-- Quản lý Người dùng / Đăng ký thẻ -->
   <div class="card">
-    <h3>Quản lý người dùng (gắn tên cho UID)</h3>
+    <h3>Đăng ký thẻ RFID (chỉ thẻ đã đăng ký mới được ghi nhận)</h3>
     <div class="grid">
+      <!-- Form -->
       <div>
         <div class="row" style="align-items:flex-start">
           <div>
             <div class="row">
-              <label style="min-width:80px">UID:</label>
+              <label style="min-width:90px">UID:</label>
               <input type="text" id="uidInput" placeholder="VD: 04781E949A7481"/>
             </div>
             <div class="row">
-              <label style="min-width:80px">Tên:</label>
+              <label style="min-width:90px">Tên hiển thị:</label>
               <input type="text" id="nameInput" placeholder="VD: User A"/>
             </div>
             <div class="row">
-              <label style="min-width:80px">Email:</label>
+              <label style="min-width:90px">Email:</label>
               <input type="text" id="emailInput" placeholder="(không bắt buộc)"/>
             </div>
             <div class="row">
               <button id="saveUserBtn" class="btn primary">Lưu user</button>
-              <span id="saveMsg" class="msg"></span>
+              <button id="checkBtn" class="btn">Kiểm tra đăng ký</button>
+              <span id="formMsg" class="msg"></span>
             </div>
-            <div class="hint">Mẹo: copy UID từ Serial Monitor của ESP32 rồi dán vào đây.</div>
+            <div class="hint">Mẹo: copy UID từ Serial Monitor ESP32, dán vào đây rồi đặt tên.</div>
           </div>
         </div>
       </div>
+
+      <!-- Danh sách -->
       <div>
         <strong>Danh sách user</strong>
         <table id="usersTable">
@@ -80,6 +85,7 @@
           </thead>
           <tbody></tbody>
         </table>
+        <div class="hint">“Xóa” sẽ xóa user và TOÀN BỘ dữ liệu sự kiện của user đó.</div>
       </div>
     </div>
   </div>
@@ -87,7 +93,7 @@
 <script>
   const API = location.origin;
 
-  // --- Phần biểu đồ & lọc ---
+  // --- Biểu đồ & lọc ---
   const userSelect = document.getElementById('userSelect');
   const fromDate   = document.getElementById('fromDate');
   const toDate     = document.getElementById('toDate');
@@ -99,11 +105,9 @@
     const users = await res.json();
     usersCache = users;
 
-    // Dropdown
     userSelect.innerHTML = `<option value="">-- Tất cả --</option>` +
       users.map(u => `<option value="${u.uid}">${u.name}</option>`).join('');
 
-    // Bảng users
     renderUsersTable(users);
   }
 
@@ -112,20 +116,25 @@
     return u ? `${u.name}` : uid;
   }
 
-  async function loadStats() {
+  async function loadStats(bustCache=false) {
     const params = new URLSearchParams();
     if (fromDate.value) params.set('from', fromDate.value);
     if (toDate.value)   params.set('to', toDate.value);
+    if (bustCache) params.set('_t', Date.now()); // chống cache
 
     if (userSelect.value) {
       params.set('uid', userSelect.value);
-      const res = await fetch(`${API}/api/events/stats/daily?` + params.toString());
+      const res = await fetch(`${API}/api/events/stats/daily?` + params.toString(), {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
       const data = await res.json();
       drawSingleUser(data, nameOf(userSelect.value));
       return;
     }
 
-    const res = await fetch(`${API}/api/events/stats/daily-by-user?` + params.toString());
+    const res = await fetch(`${API}/api/events/stats/daily-by-user?` + params.toString(), {
+      headers: { 'Cache-Control': 'no-cache' }
+    });
     const raw = await res.json();
 
     const labels = Array.from(new Set(raw.map(r => r._id.day))).sort();
@@ -171,76 +180,38 @@
   fromDate.valueAsDate = past;
   toDate.valueAsDate = now;
 
-  loadUsers().then(loadStats);
-  loadBtn.addEventListener('click', loadStats);
-  userSelect.addEventListener('change', loadStats);
+  loadUsers().then(() => loadStats());
+  loadBtn.addEventListener('click', () => loadStats(true));
+  userSelect.addEventListener('change', () => loadStats(true));
 
-  // --- Phần quản lý user ---
+  // --- Quản lý user / Đăng ký thẻ ---
   const uidInput   = document.getElementById('uidInput');
   const nameInput  = document.getElementById('nameInput');
   const emailInput = document.getElementById('emailInput');
   const saveBtn    = document.getElementById('saveUserBtn');
-  const saveMsg    = document.getElementById('saveMsg');
+  const checkBtn   = document.getElementById('checkBtn');
+  const formMsg    = document.getElementById('formMsg');
   const usersTableBody = document.querySelector('#usersTable tbody');
 
-  function showMsg(text, ok=true){
-    saveMsg.textContent = text;
-    saveMsg.className = 'msg ' + (ok ? 'ok':'err');
-    setTimeout(()=>{ saveMsg.className='msg'; }, 2500);
+  function showMsg(el, text, ok=true){
+    el.textContent = text;
+    el.className = 'msg ' + (ok ? 'ok':'err');
+    setTimeout(()=>{ el.className='msg'; }, 2500);
   }
-function renderUsersTable(users){
-  usersTableBody.innerHTML = users.map(u => `
-    <tr>
-      <td>${u.uid}</td>
-      <td>${u.name||''}</td>
-      <td>${u.email||''}</td>
-      <td style="white-space:nowrap">
-        <button class="btn small" data-edit="${u.uid}">Chọn để sửa</button>
-        <button class="btn small" data-del="${u.uid}" style="margin-left:6px">Xóa</button>
-      </td>
-    </tr>
-  `).join('');
 
-  // gắn click cho "Chọn để sửa"
-  usersTableBody.querySelectorAll('button[data-edit]').forEach(btn=>{
-    btn.addEventListener('click', ()=>{
-      const uid = btn.getAttribute('data-edit');
-      const user = usersCache.find(x=>x.uid===uid);
-      if (user){
-        uidInput.value = user.uid;
-        nameInput.value = user.name||'';
-        emailInput.value = user.email||'';
-        uidInput.focus();
-      }
-    });
-  });
+  function renderUsersTable(users){
+    usersTableBody.innerHTML = users.map(u => `
+      <tr>
+        <td>${u.uid}</td>
+        <td>${u.name||''}</td>
+        <td>${u.email||''}</td>
+        <td>
+          <button class="btn small" data-edit="${u.uid}">Sửa</button>
+          <button class="btn small danger" data-del="${u.uid}" style="margin-left:6px">Xóa</button>
+        </td>
+      </tr>
+    `).join('');
 
-  // gắn click cho "Xóa"
-  usersTableBody.querySelectorAll('button[data-del]').forEach(btn=>{
-    btn.addEventListener('click', async ()=>{
-      const uid = btn.getAttribute('data-del');
-      const user = usersCache.find(x=>x.uid===uid);
-      const label = user ? `${user.name} (${user.uid})` : uid;
-      if (!confirm(`Xóa user: ${label}? Hành động này không thể hoàn tác.`)) return;
-
-      try{
-        const res = await fetch(`${API}/api/users/${encodeURIComponent(uid)}`, { method:'DELETE' });
-        if(!res.ok){
-          const err = await res.json().catch(()=>({message:res.statusText}));
-          alert('Lỗi: ' + (err.message||res.statusText));
-          return;
-        }
-        // Nếu đang lọc đúng user vừa xóa, chuyển dropdown về "Tất cả"
-        if (userSelect.value === uid) userSelect.value = '';
-        await loadUsers();  // reload danh sách + dropdown
-        await loadStats();  // vẽ lại biểu đồ
-      }catch(e){
-        alert('Lỗi kết nối server khi xóa user');
-      }
-    });
-  });
-}
-    // gắn click cho nút "Chọn để sửa"
     usersTableBody.querySelectorAll('button[data-edit]').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         const uid = btn.getAttribute('data-edit');
@@ -254,13 +225,35 @@ function renderUsersTable(users){
       });
     });
 
+    usersTableBody.querySelectorAll('button[data-del]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const uid = btn.getAttribute('data-del');
+        if (!confirm(`Xóa user ${uid} và TOÀN BỘ dữ liệu của họ?`)) return;
+        try{
+          const res = await fetch(`${API}/api/users/${uid}`, { method: 'DELETE' });
+          const data = await res.json().catch(()=> ({}));
+          if (!res.ok) {
+            alert('Lỗi xóa: ' + (data.message || res.statusText));
+            return;
+          }
+          await loadUsers();
+          if (userSelect.value === uid) userSelect.value = '';
+          await loadStats(true); // reload + chống cache
+        }catch(e){
+          alert('Lỗi kết nối server khi xóa');
+        }
+      });
+    });
+  }
+
+  // Lưu/Đăng ký user (upsert)
   saveBtn.addEventListener('click', async ()=>{
     const uid = (uidInput.value||'').trim().toUpperCase();
     const name = (nameInput.value||'').trim();
     const email = (emailInput.value||'').trim();
 
     if (!uid || !name){
-      showMsg('Vui lòng nhập UID và Tên', false);
+      showMsg(formMsg, 'Vui lòng nhập UID và Tên', false);
       return;
     }
 
@@ -272,15 +265,29 @@ function renderUsersTable(users){
       });
       if(!res.ok){
         const err = await res.json().catch(()=>({message:res.statusText}));
-        showMsg('Lỗi: ' + (err.message||res.statusText), false);
+        showMsg(formMsg, 'Lỗi: ' + (err.message||res.statusText), false);
         return;
       }
-      showMsg('Đã lưu user');
+      showMsg(formMsg, 'Đã lưu user');
       uidInput.value=''; nameInput.value=''; emailInput.value='';
-      await loadUsers();   // reload danh sách + dropdown
-      await loadStats();   // vẽ lại biểu đồ cho chắc
+      await loadUsers();
+      await loadStats(true);
     }catch(e){
-      showMsg('Lỗi kết nối server', false);
+      showMsg(formMsg, 'Lỗi kết nối server', false);
+    }
+  });
+
+  // Kiểm tra UID đã đăng ký chưa
+  checkBtn.addEventListener('click', async ()=>{
+    const uid = (uidInput.value||'').trim().toUpperCase();
+    if (!uid){ showMsg(formMsg, 'Nhập UID trước', false); return; }
+    try{
+      const res = await fetch(`${API}/api/users/${uid}/exists`);
+      if(!res.ok){ showMsg(formMsg, 'Không kiểm tra được', false); return; }
+      const data = await res.json();
+      showMsg(formMsg, data.exists ? 'UID này ĐÃ đăng ký' : 'UID này CHƯA đăng ký', data.exists);
+    }catch(e){
+      showMsg(formMsg, 'Lỗi kết nối server', false);
     }
   });
 </script>

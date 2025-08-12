@@ -50,19 +50,29 @@ void wifiConnect() {
 }
 
 bool httpPostButton(const String& uid, unsigned long ts) {
-  if (WiFi.status() != WL_CONNECTED) return false;
-
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi not connected, skip POST");
+    return false;
+  }
   HTTPClient http;
   String url = String(API_BASE) + "/api/events/button";
   http.begin(url);
   http.addHeader("Content-Type", "application/json");
+  http.setTimeout(6000);
 
-  // ISO timestamp (đơn giản dùng millis, server sẽ lấy server time nếu muốn)
   String payload = "{\"uid\":\"" + uid + "\",\"timestamp\":" + String(ts) + "}";
   int code = http.POST(payload);
+  String resp = (code > 0) ? http.getString() : "";
+  Serial.printf("POST %s -> code %d, resp: %s\n", url.c_str(), code, resp.c_str());
   http.end();
+
+  if (code == 403) {
+    Serial.println(">> UID chưa đăng ký. Hãy đăng ký thẻ trước trên dashboard.");
+    return true; // coi như đã xử lý để KHÔNG nhét lại vào queue
+  }
   return code >= 200 && code < 300;
 }
+
 
 String readUID() {
   if (!rfid.PICC_IsNewCardPresent() || !rfid.PICC_ReadCardSerial()) return "";
