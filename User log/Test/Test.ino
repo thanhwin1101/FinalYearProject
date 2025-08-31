@@ -2,6 +2,9 @@
 #include <HTTPClient.h>
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 
 // ===== PIN & BUTTON =====
 #define RFID_SS   5
@@ -16,18 +19,21 @@ const char* API_BASE  = "http://192.168.1.12:3000"; // đổi IP server nếu c�
 // ===== RFID =====
 MFRC522 rfid(RFID_SS, RFID_RST);
 
-// ===== UART to UNO (chỉ ESP32->UNO) =====
-// EXPLICT: RX=16, TX=17 để không lệch chân
-HardwareSerial &uno = Serial2;
-const uint32_t UART_BAUD = 38400;
+// ===== OLED (SSD1306 0.91") =====
+#define OLED_WIDTH   128
+#define OLED_HEIGHT   32          // nếu màn 128x64 thì đổi = 64
+#define OLED_ADDR     0x3C
+#define I2C_SDA_PIN   21
+#define I2C_SCL_PIN   26          // tránh trùng RST=22
+
+Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
 // ===== SESSION STATE =====
-bool sessionActive = false;
-String sessionUID = "";
-String sessionName = "";
-uint32_t sessionPressCount = 0;
-unsigned long lastActivityMs = 0;
-const unsigned long SESSION_TIMEOUT = 20000; // 20s
+bool   sessionActive      = false;
+String sessionUID         = "";
+String sessionName        = "";
+uint32_t sessionPressCount= 0;
+unsigned long lastActivityMs = 0;   // giữ lại phòng khi dùng sau
 
 // ===== BUTTON DEBOUNCE =====
 unsigned long lastBtnChange = 0;
@@ -113,12 +119,88 @@ String readUIDOnce() {
   return s;
 }
 
-// ===== UART HELPERS =====
-inline void sendLine(const char* s){ uno.print(s); uno.print('\n'); }
-void sendNameToUno(const String &name) { uno.print("NAME:");  uno.print(name);  uno.print('\n'); }
-void sendCountToUno(uint32_t c)        { uno.print("COUNT:"); uno.print(c);     uno.print('\n'); }
-void sendEndToUno()                    { sendLine("END"); }
-void sendUnregisteredToUno()           { sendLine("UNREGISTERED"); }
+// ===== OLED HELPERS =====
+void oledInit() {
+  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+    Serial.println("SSD1306 allocation failed");
+    return;
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);       // dùng WHITE cho đơn sắc
+  display.setCursor(0, 0);
+  display.println("Booting...");
+  display.display();
+}
+
+void oledClear() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+}
+
+// Vẽ 2 dòng (y=0 và y=16 cho 128x32)
+void oledTwoLines(const String &l1, const String &l2) {
+  oledClear();
+  display.setCursor(0, 0);
+  display.println(l1);
+  display.setCursor(0, 16);
+  display.println(l2);
+  display.display();
+}
+
+void oledShowWelcomeStatic(const String &nameShort) {
+  oledTwoLines("Login OK", "User: " + nameShort);
+}
+void oledShowCount(uint32_t c) { oledTwoLines("Press Count:", String(c)); }
+void oledShowEnd()             { oledTwoLines("Logout", "Bye!"); }
+void oledShowUnregistered()    { oledTwoLines("CARD:", "UNREGISTERED"); }
+void oledShowWifi(bool ok)     { oledTwoLines("WiFi", ok ? "Connected" : "Not connected"); }
+void oledShowIdle()            { oledTwoLines("Ready", "Tap your card"); }
+
+// ===== MARQUEE (cuộn tên dài dòng 2) =====
+// Không chặn luồng; cập nhật trong loop() theo timer
+bool marqueeOn = false;
+String marqueeText = "";
+int marqueeX = 0;
+unsigned long lastMarqueeMs = 0;
+const unsigned long MARQUEE_INTERVAL = 60; // ms giữa các frame
+int textPixelWidth = 0;
+
+void marqueeStart(const String &text) {
+  marqueeOn = true;
+  marqueeText = "User: " + text + "   ";  // thêm khoảng trống đuôi cho mượt
+  marqueeX = OLED_WIDTH;                   // bắt đầu từ ngoài biên phải
+  // size=1, font 5x7 + 1px khoảng => ~6 px/char
+  textPixelWidth = marqueeText.length() * 6;
+}
+
+void marqueeStop() {
+  marqueeOn = false;
+}
+
+void marqueeUpdate() {
+  if (!marqueeOn) return;
+  unsigned long now = millis();
+  if (now - lastMarqueeMs < MARQUEE_INTERVAL) return;
+  lastMarqueeMs = now;
+
+  // Chỉ làm sạch dòng 2 (y=16, cao ~16px)
+  display.fillRect(0, 16, OLED_WIDTH, 16, BLACK);
+  display.setCursor(marqueeX, 16);
+  display.print(marqueeText);
+  display.display();
+
+  marqueeX -= 2; // tốc độ cuộn
+  if (marqueeX < -textPixelWidth) {
+    marqueeX = OLED_WIDTH; // lặp lại
+  }
+}
+
+// ===== UNREGISTERED AUTO-IDLE =====
+unsigned long unregShownAt = 0;             // 0 = ko hiển thị unreg
+const unsigned long UNREG_IDLE_DELAY = 2000;// 2 giây rồi tự về Idle
 
 // ===== SESSION HELPERS =====
 void startSession(const String& uid, const String& name) {
@@ -128,43 +210,52 @@ void startSession(const String& uid, const String& name) {
   sessionPressCount = 0;
   lastActivityMs = millis();
   Serial.printf("[LOGIN] UID=%s, name=%s\n", uid.c_str(), name.c_str());
-  sendNameToUno(sessionName);  // báo LCD
+
+  // Nếu tên dài, bật cuộn; ngắn thì hiển thị tĩnh
+  if (sessionName.length() > 14) {
+    oledTwoLines("Login OK", "");   // dòng 1 cố định, dòng 2 để marquee
+    marqueeStart(sessionName);
+  } else {
+    marqueeStop();
+    oledShowWelcomeStatic(sessionName);
+  }
 }
 
 void endSession() {
   if (sessionActive) {
     Serial.printf("[LOGOUT] UID=%s, total presses=%u\n", sessionUID.c_str(), sessionPressCount);
-    sendEndToUno(); // báo LCD
+    marqueeStop();
+    oledShowEnd();
   }
   sessionActive = false;
   sessionUID = ""; sessionName = ""; sessionPressCount = 0;
+
+  // quay về màn chờ
+  oledShowIdle();
 }
 
 void setup() {
   Serial.begin(115200);
-
-  // UART sang UNO: TX=17, RX=16 — ta chỉ dùng TX
-  uno.begin(UART_BAUD, SERIAL_8N1, 16, 17);
-
   pinMode(BTN_PIN, INPUT_PULLUP);
 
   SPI.begin();
   rfid.PCD_Init();
 
+  oledInit();
+
   wifiConnect();
   Serial.println(WiFi.status() == WL_CONNECTED ? "WiFi OK" : "WiFi FAIL");
+  oledShowWifi(WiFi.status() == WL_CONNECTED);
+  delay(800);
+
+  // Hiển thị trạng thái chờ quẹt thẻ
+  oledShowIdle();
 }
 
 void loop() {
   unsigned long now = millis();
 
-  // Auto logout khi timeout
-  if (sessionActive && (now - lastActivityMs > SESSION_TIMEOUT)) {
-    Serial.println("[TIMEOUT] Auto logout");
-    endSession();
-  }
-
-  // Đọc thẻ (cooldown)
+  // ---- RFID ----
   String uid = readUIDOnce();
   if (uid.length() > 0) {
     if (now - lastCardSeenMs > CARD_COOLDOWN_MS) {
@@ -173,24 +264,29 @@ void loop() {
       if (!sessionActive) {
         String name;
         if (httpGetUserDetail(uid, name)) {
+          unregShownAt = 0;             // clear cờ unreg
           startSession(uid, name);
         } else {
-          // không có mạng hoặc thẻ chưa đăng ký: báo ngay trên LCD
+          // thẻ chưa đăng ký hoặc lỗi mạng
           Serial.printf("[CARD] %s -> UNREGISTERED or NET FAIL\n", uid.c_str());
-          sendUnregisteredToUno();
+          marqueeStop();
+          oledShowUnregistered();
+          unregShownAt = millis();      // bắt đầu đếm để tự về Idle
         }
       } else {
         if (uid == sessionUID) {
-          // Toggle logout với cùng thẻ
+          // Quẹt lại cùng thẻ để logout
           endSession();
         } else {
-          // Chuyển phiên
+          // Chuyển phiên sang thẻ mới
           endSession();
           String name;
           if (httpGetUserDetail(uid, name)) {
             startSession(uid, name);
           } else {
-            sendUnregisteredToUno();
+            marqueeStop();
+            oledShowUnregistered();
+            unregShownAt = millis();
           }
         }
       }
@@ -198,7 +294,7 @@ void loop() {
     delay(100);
   }
 
-  // Đọc nút – chỉ khi có phiên
+  // ---- Nút bấm ----
   bool st = digitalRead(BTN_PIN);
   if (st != lastBtnState) { lastBtnChange = now; lastBtnState = st; }
   if (now - lastBtnChange > 30) {
@@ -208,15 +304,25 @@ void loop() {
         enqueue(sessionUID, now);
         sessionPressCount++;
         lastActivityMs = now;
-        sendCountToUno(sessionPressCount); // cập nhật LCD ngay
+        // Khi đang marquee, giữ marquee (không vẽ đè), chỉ vẽ nhanh dòng 1/2:
+        if (!marqueeOn) oledShowCount(sessionPressCount);
+        else {
+          // Cập nhật dòng 1: "Press Count: X", giữ dòng 2 cho marquee
+          display.fillRect(0, 0, OLED_WIDTH, 16, BLACK);
+          display.setCursor(0, 0);
+          display.print("Press Count: ");
+          display.print(sessionPressCount);
+          display.display();
+        }
       } else {
         Serial.println("No active session. Tap card first.");
+        oledShowIdle();
       }
     }
     if (st == HIGH && pressedLatch) pressedLatch = false;
   }
 
-  // Gửi hàng đợi nếu có mạng
+  // ---- Gửi hàng đợi khi có mạng ----
   if (WiFi.status() == WL_CONNECTED) {
     Event e;
     while (dequeue(e)) {
@@ -224,7 +330,16 @@ void loop() {
     }
   } else {
     static unsigned long lastTry = 0;
-    if (now - lastTry > 5000) { wifiConnect(); lastTry = now; }
+    if (now - lastTry > 5000) { wifiConnect(); lastTry = now; oledShowWifi(false); }
+  }
+
+  // ---- Marquee update (nếu đang cuộn) ----
+  marqueeUpdate();
+
+  // ---- Sau UNREGISTERED tự về Idle ----
+  if (!sessionActive && unregShownAt && (now - unregShownAt > UNREG_IDLE_DELAY)) {
+    unregShownAt = 0;
+    oledShowIdle();
   }
 
   delay(5);
