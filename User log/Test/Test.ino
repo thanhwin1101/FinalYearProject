@@ -12,32 +12,41 @@
 #define BTN_PIN   27
 
 // ===== WIFI & API =====
-const char* WIFI_SSID = "CUONG HA";
-const char* WIFI_PASS = "0973567115";
-const char* API_BASE  = "http://192.168.1.12:3000"; // đổi IP server nếu cần
+const char* WIFI_SSID = "S23";
+const char* WIFI_PASS = "123456789";
+const char* API_BASE  = "http://10.123.189.129:3000"; // đổi IP server nếu cần
 
 // ===== RFID =====
 MFRC522 rfid(RFID_SS, RFID_RST);
 
 // ===== OLED (SSD1306 0.91") =====
-#define OLED_WIDTH   128
-#define OLED_HEIGHT   32          // nếu màn 128x64 thì đổi = 64
-#define OLED_ADDR     0x3C
-#define I2C_SDA_PIN   21
-#define I2C_SCL_PIN   26          // tránh trùng RST=22
+#define OLED_WIDTH    128
+#define OLED_HEIGHT    32          // nếu màn 128x64 thì đổi = 64
+#define OLED_ADDR    0x3C
+// I2C: tránh trùng RST=22, dùng SDA=21, SCL=26 (đổi nếu phần cứng khác)
+#define I2C_SDA_PIN    21
+#define I2C_SCL_PIN    26
 
 Adafruit_SSD1306 display(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
 
+// ===== UI TIMINGS (ms) ====
+// Thời gian giữ các màn tạm trước khi chuyển tiếp
+const unsigned long WIFI_SHOW_MS      = 2000; // màn Wi-Fi ở setup
+const unsigned long UNREG_IDLE_DELAY  = 4000; // "UNREGISTERED" -> Idle
+const unsigned long LOGIN_HOLD_MS     = 3000; // Giữ "Login OK" tĩnh rồi mới bật marquee
+const unsigned long COUNT_HOLD_MS     = 2000; // Giữ "Press Count" lâu hơn
+const unsigned long LOGOUT_HOLD_MS   = 3000; // Giữ thông báo Logout 3s trước khi về Idle
+
 // ===== SESSION STATE =====
-bool   sessionActive      = false;
-String sessionUID         = "";
-String sessionName        = "";
-uint32_t sessionPressCount= 0;
-unsigned long lastActivityMs = 0;   // giữ lại phòng khi dùng sau
+bool   sessionActive       = false;
+String sessionUID          = "";
+String sessionName         = "";
+uint32_t sessionPressCount = 0;
+unsigned long lastActivityMs = 0;    // giữ lại để dùng sau nếu cần (không auto logout)
 
 // ===== BUTTON DEBOUNCE =====
 unsigned long lastBtnChange = 0;
-bool lastBtnState = HIGH; // INPUT_PULLUP
+bool lastBtnState = HIGH;            // INPUT_PULLUP
 bool pressedLatch = false;
 
 // ===== RFID COOLDOWN =====
@@ -133,6 +142,11 @@ void oledInit() {
   display.println("Booting...");
   display.display();
 }
+void oledShowLogout(const String &name) {
+  String n = name;
+  if (n.length() > 14) n = n.substring(0, 14);
+  oledTwoLines("Logout", "Bye, " + n);
+}
 
 void oledClear() {
   display.clearDisplay();
@@ -140,27 +154,23 @@ void oledClear() {
   display.setTextColor(WHITE);
 }
 
-// Vẽ 2 dòng (y=0 và y=16 cho 128x32)
 void oledTwoLines(const String &l1, const String &l2) {
   oledClear();
   display.setCursor(0, 0);
   display.println(l1);
-  display.setCursor(0, 16);
+  display.setCursor(0, 16);          // 128x32: dòng 2 ở y=16
   display.println(l2);
   display.display();
 }
 
-void oledShowWelcomeStatic(const String &nameShort) {
-  oledTwoLines("Login OK", "User: " + nameShort);
-}
-void oledShowCount(uint32_t c) { oledTwoLines("Press Count:", String(c)); }
-void oledShowEnd()             { oledTwoLines("Logout", "Bye!"); }
-void oledShowUnregistered()    { oledTwoLines("CARD:", "UNREGISTERED"); }
-void oledShowWifi(bool ok)     { oledTwoLines("WiFi", ok ? "Connected" : "Not connected"); }
-void oledShowIdle()            { oledTwoLines("Ready", "Tap your card"); }
+void oledShowWelcomeStatic(const String &nameShort) { oledTwoLines("Login OK", "User: " + nameShort); }
+void oledShowCount(uint32_t c)                      { oledTwoLines("Press Count:", String(c)); }
+void oledShowEnd()                                  { oledTwoLines("Logout", "Bye!"); }
+void oledShowUnregistered()                         { oledTwoLines("CARD:", "UNREGISTERED"); }
+void oledShowWifi(bool ok)                          { oledTwoLines("WiFi", ok ? "Connected" : "Not connected"); }
+void oledShowIdle()                                 { oledTwoLines("Ready", "Tap your card"); }
 
 // ===== MARQUEE (cuộn tên dài dòng 2) =====
-// Không chặn luồng; cập nhật trong loop() theo timer
 bool marqueeOn = false;
 String marqueeText = "";
 int marqueeX = 0;
@@ -170,37 +180,35 @@ int textPixelWidth = 0;
 
 void marqueeStart(const String &text) {
   marqueeOn = true;
-  marqueeText = "User: " + text + "   ";  // thêm khoảng trống đuôi cho mượt
-  marqueeX = OLED_WIDTH;                   // bắt đầu từ ngoài biên phải
-  // size=1, font 5x7 + 1px khoảng => ~6 px/char
-  textPixelWidth = marqueeText.length() * 6;
+  marqueeText = "User: " + text + "   ";  // khoảng trắng đuôi cho mượt
+  marqueeX = OLED_WIDTH;                   // bắt đầu cuộn từ mép phải
+  textPixelWidth = marqueeText.length() * 6; // size=1, ~6 px/ký tự
 }
-
 void marqueeStop() {
   marqueeOn = false;
 }
-
 void marqueeUpdate() {
   if (!marqueeOn) return;
   unsigned long now = millis();
   if (now - lastMarqueeMs < MARQUEE_INTERVAL) return;
   lastMarqueeMs = now;
 
-  // Chỉ làm sạch dòng 2 (y=16, cao ~16px)
+  // Xóa dòng 2, vẽ lại text cuộn
   display.fillRect(0, 16, OLED_WIDTH, 16, BLACK);
   display.setCursor(marqueeX, 16);
   display.print(marqueeText);
   display.display();
 
   marqueeX -= 2; // tốc độ cuộn
-  if (marqueeX < -textPixelWidth) {
-    marqueeX = OLED_WIDTH; // lặp lại
-  }
+  if (marqueeX < -textPixelWidth) marqueeX = OLED_WIDTH;
 }
 
+// ===== UI HOLD CONTROL =====
+unsigned long uiHoldUntil = 0;     // mốc thời gian giữ màn hiện tại
+bool pendingMarquee = false;       // sẽ bật marquee sau khi hết giữ
+
 // ===== UNREGISTERED AUTO-IDLE =====
-unsigned long unregShownAt = 0;             // 0 = ko hiển thị unreg
-const unsigned long UNREG_IDLE_DELAY = 2000;// 2 giây rồi tự về Idle
+unsigned long unregShownAt = 0;    // 0 = không hiển thị unreg (đang idle/khác)
 
 // ===== SESSION HELPERS =====
 void startSession(const String& uid, const String& name) {
@@ -211,28 +219,42 @@ void startSession(const String& uid, const String& name) {
   lastActivityMs = millis();
   Serial.printf("[LOGIN] UID=%s, name=%s\n", uid.c_str(), name.c_str());
 
-  // Nếu tên dài, bật cuộn; ngắn thì hiển thị tĩnh
+  // Welcome tĩnh trước, rồi mới bật marquee nếu tên dài
+  marqueeStop();
   if (sessionName.length() > 14) {
-    oledTwoLines("Login OK", "");   // dòng 1 cố định, dòng 2 để marquee
-    marqueeStart(sessionName);
+    String shortName = sessionName.substring(0, 14);
+    oledShowWelcomeStatic(shortName);
+    pendingMarquee = true;                         // sẽ bật marquee sau khi hết giữ
+    uiHoldUntil    = millis() + LOGIN_HOLD_MS;     // giữ welcome lâu hơn
   } else {
-    marqueeStop();
-    oledShowWelcomeStatic(sessionName);
+    oledShowWelcomeStatic(sessionName);            // tên ngắn: không cần marquee
+    pendingMarquee = false;
+    uiHoldUntil    = 0;
   }
 }
 
 void endSession() {
+  // Lưu lại tên trước khi xóa để hiện thông báo đẹp
+  String lastName = sessionName;
+
   if (sessionActive) {
     Serial.printf("[LOGOUT] UID=%s, total presses=%u\n", sessionUID.c_str(), sessionPressCount);
     marqueeStop();
-    oledShowEnd();
+    oledShowLogout(lastName);             // ✅ Hiện thông báo Logout kèm tên
   }
-  sessionActive = false;
-  sessionUID = ""; sessionName = ""; sessionPressCount = 0;
 
-  // quay về màn chờ
-  oledShowIdle();
+  // Reset phiên
+  sessionActive = false;
+  sessionUID = ""; 
+  sessionName = ""; 
+  sessionPressCount = 0;
+
+  // GIỮ màn Logout thêm vài giây, rồi mới tự về Idle trong loop()
+  pendingMarquee = false;
+  uiHoldUntil = millis() + LOGOUT_HOLD_MS;
+  // ❌ KHÔNG gọi oledShowIdle() ở đây nữa
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -246,7 +268,9 @@ void setup() {
   wifiConnect();
   Serial.println(WiFi.status() == WL_CONNECTED ? "WiFi OK" : "WiFi FAIL");
   oledShowWifi(WiFi.status() == WL_CONNECTED);
-  delay(800);
+
+  // Giữ màn Wi-Fi lâu hơn một chút
+  delay(WIFI_SHOW_MS);
 
   // Hiển thị trạng thái chờ quẹt thẻ
   oledShowIdle();
@@ -264,14 +288,14 @@ void loop() {
       if (!sessionActive) {
         String name;
         if (httpGetUserDetail(uid, name)) {
-          unregShownAt = 0;             // clear cờ unreg
+          unregShownAt = 0;                // clear cờ unreg
           startSession(uid, name);
         } else {
           // thẻ chưa đăng ký hoặc lỗi mạng
           Serial.printf("[CARD] %s -> UNREGISTERED or NET FAIL\n", uid.c_str());
           marqueeStop();
           oledShowUnregistered();
-          unregShownAt = millis();      // bắt đầu đếm để tự về Idle
+          unregShownAt = millis();         // bắt đầu đếm để tự về Idle
         }
       } else {
         if (uid == sessionUID) {
@@ -304,15 +328,19 @@ void loop() {
         enqueue(sessionUID, now);
         sessionPressCount++;
         lastActivityMs = now;
-        // Khi đang marquee, giữ marquee (không vẽ đè), chỉ vẽ nhanh dòng 1/2:
-        if (!marqueeOn) oledShowCount(sessionPressCount);
-        else {
-          // Cập nhật dòng 1: "Press Count: X", giữ dòng 2 cho marquee
+
+        // Hiển thị count & giữ lâu hơn
+        if (!marqueeOn) {
+          oledShowCount(sessionPressCount);          // vẽ cả 2 dòng
+          uiHoldUntil = millis() + COUNT_HOLD_MS;    // giữ màn count
+        } else {
+          // Đang marquee: chỉ vẽ dòng 1 (dòng 2 vẫn cuộn)
           display.fillRect(0, 0, OLED_WIDTH, 16, BLACK);
           display.setCursor(0, 0);
-          display.print("Press Count: ");
+          display.print("Step Count: ");
           display.print(sessionPressCount);
           display.display();
+          uiHoldUntil = millis() + COUNT_HOLD_MS;    // giữ dòng 1 count lâu hơn
         }
       } else {
         Serial.println("No active session. Tap card first.");
@@ -340,6 +368,35 @@ void loop() {
   if (!sessionActive && unregShownAt && (now - unregShownAt > UNREG_IDLE_DELAY)) {
     unregShownAt = 0;
     oledShowIdle();
+  }
+
+  // ---- Hết thời gian giữ màn Welcome -> bật marquee (nếu cần) ----
+  if (pendingMarquee && sessionActive && now > uiHoldUntil) {
+    pendingMarquee = false;
+    uiHoldUntil = 0;
+    marqueeStart(sessionName);   // bắt đầu cuộn "User: <tên>"
+  }
+
+  // ---- Hết giữ COUNT -> khôi phục màn trước ----
+  if (uiHoldUntil && now > uiHoldUntil && !pendingMarquee) {
+    uiHoldUntil = 0;
+
+    if (sessionActive) {
+      if (marqueeOn) {
+        // Đang marquee: khôi phục dòng 1 mặc định cho marquee
+        display.fillRect(0, 0, OLED_WIDTH, 16, BLACK);
+        display.setCursor(0, 0);
+        display.print("Login OK");
+        display.display();
+        // dòng 2 tiếp tục marquee bình thường
+      } else {
+        // Không marquee (tên ngắn): quay về màn Welcome tĩnh
+        oledShowWelcomeStatic(sessionName);
+      }
+    } else {
+      // Nếu không còn phiên (vừa logout), quay về Idle
+      oledShowIdle();
+    }
   }
 
   delay(5);
