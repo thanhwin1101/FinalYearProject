@@ -28,6 +28,7 @@
 #define ANKLE_PITCH_MIN_ANGLE -30.0
 #define ANKLE_PITCH_MAX_ANGLE 30.0
 
+
 // --- Chuyển động NGANG (ROLL) ---
 #define HIP_ROLL_MIN_ANGLE    -30.0 // (Đã xác nhận)
 #define HIP_ROLL_MAX_ANGLE    30.0  // (Đã xác nhận)
@@ -48,21 +49,21 @@ struct JointCfg {
 
 // Khởi tạo mảng cấu hình dựa trên dữ liệu bạn cung cấp
 JointCfg joints[JOINT_COUNT] = {
-  {"HIP_PITCH_L", 0, 89.00f, false},
-  {"HIP_ROLL_L", 1, 58.50f, false},
-  {"KNEE_PITCH_L", 2, 51.50f, false},
-  {"ANKLE_PITCH_L", 3, 57.00f, false},
-  {"ANKLE_ROLL_L", 4, 54.50f, false},
-  {"HIP_PITCH_R", 5, 53.50f, true },
-  {"HIP_ROLL_R", 6, 53.00f, false},
-  {"KNEE_PITCH_R", 7, 56.50f, true },
-  {"ANKLE_PITCH_R", 8, 55.50f, true },
-  {"ANKLE_ROLL_R", 9, 54.00f, false}
+  {"HIP_PITCH_L", 0, 47.50f, false},
+  {"HIP_ROLL_L", 1, 56.00f, false},
+  {"KNEE_PITCH_L", 2, 49.00f, false},
+  {"ANKLE_PITCH_L", 3, 53.50f, false},
+  {"ANKLE_ROLL_L", 4, 55.50f, false},
+  {"HIP_PITCH_R", 5, 60.50f, true},
+  {"HIP_ROLL_R", 6, 88.50f, false},
+  {"KNEE_PITCH_R", 7, 53.50f, true},
+  {"ANKLE_PITCH_R", 8, 57.00f, true},
+  {"ANKLE_ROLL_R", 9, 59.00f, false}
 };
 
 // Index tiện lợi để truy cập mảng trên
 enum JointIndex {
-  HIP_PITCH_L = 0,
+  HIP_PITCH_L = 0,  
   HIP_ROLL_L = 1,
   KNEE_PITCH_L = 2,
   ANKLE_PITCH_L = 3,
