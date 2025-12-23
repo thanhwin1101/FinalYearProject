@@ -1,0 +1,1251 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Patient Management</title>
+  <style>
+    :root{--gap:12px}
+    body{font-family:system-ui,Arial;padding:20px;max-width:1150px;margin:auto}
+    h2{margin:0 0 10px 0}
+    .row{display:flex;gap:var(--gap);flex-wrap:wrap;margin-bottom:var(--gap);align-items:center}
+    select,input,button,textarea{padding:8px}
+    input[type="text"]{min-width:240px}
+    .btn{cursor:pointer;border:1px solid #ccc;border-radius:8px;background:#fff}
+    .btn.primary{background:#0d6efd;color:#fff;border-color:#0d6efd}
+    .btn.small{padding:6px 10px;font-size:13px}
+    .danger{color:#b00020;border-color:#f3c0c0}
+    .card{border:1px solid #ddd;border-radius:10px;padding:14px;margin:16px 0}
+    .pane{border:1px solid #eee;border-radius:10px;padding:12px}
+    .hint{font-size:12px;color:#666}
+    .msg{padding:8px 10px;border-radius:8px;font-size:14px;display:none;margin-left:8px}
+    .msg.ok{background:#e6ffed;border:1px solid #b7f5c6;color:#0a6d2e;display:inline-block}
+    .msg.err{background:#ffecec;border:1px solid #ffbcbc;color:#941414;display:inline-block}
+    table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
+    th,td{border-bottom:1px solid #eee;padding:8px 6px;text-align:left;vertical-align:top}
+    tr:hover{background:#fafafa}
+    .tableWrap{overflow:auto;border:1px solid #eee;border-radius:10px}
+    .actions{display:flex;gap:8px;flex-wrap:wrap}
+
+    .photoSmall{
+      width:36px;height:36px;border-radius:10px;background:#eef2f7;
+      display:inline-block;object-fit:cover;border:1px solid #e5e7eb
+    }
+    .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid transparent}
+    .bStable{background:#e6ffed;border-color:#b7f5c6;color:#0a6d2e}
+    .bObserve{background:#fff6d8;border-color:#ffe39f;color:#8a6100}
+    .bCritical{background:#ffecec;border-color:#ffbcbc;color:#941414}
+    .bDischarged{background:#eef2ff;border-color:#c7d2fe;color:#3730a3}
+
+    /* click-to-open details hint (không áp dụng cho cột Actions) */
+    tbody tr[data-id] td:not(:last-child){cursor:pointer}
+
+    /* ===== Modal base ===== */
+    .modalOverlay{
+      position:fixed; inset:0;
+      background:rgba(0,0,0,.55);
+      display:none;
+      align-items:center; justify-content:center;
+      padding:18px;
+      z-index:9999;
+    }
+    .modalOverlay.show{display:flex}
+    .modalBox{
+      width:min(980px, 100%);
+      max-height:90vh;
+      overflow:auto;
+      background:#fff;
+      border-radius:14px;
+      border:1px solid #e6e6e6;
+      box-shadow:0 12px 40px rgba(0,0,0,.25);
+    }
+    .modalHeader{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      padding:14px 16px;
+      border-bottom:1px solid #eee;
+      position:sticky; top:0; background:#fff;
+    }
+    .modalHeader h3{margin:0;font-size:18px}
+    .modalClose{border:1px solid #ddd;border-radius:10px;background:#fff;cursor:pointer;padding:8px 10px}
+    .modalBody{padding:14px 16px}
+
+    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:10px}
+    .field label{font-size:13px;font-weight:700}
+    .field label .req{color:#d11}
+    .twoCol{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    .threeCol{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+    .smallInput{min-width:160px}
+    .textarea{width:100%;min-height:80px;padding:8px;border-radius:10px;border:1px solid #ddd}
+
+    /* details modal tabs */
+    .modalTabs{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px 0}
+    .modalTab{
+      cursor:pointer;border:1px solid #ddd;background:#fff;
+      padding:8px 10px;border-radius:10px;font-weight:700;font-size:13px;
+    }
+    .modalTab.active{border-color:#0d6efd;color:#0d6efd;background:#f3f7ff}
+    .modalPanel{display:none}
+    .modalPanel.show{display:block}
+
+    /* camera box */
+    .camWrap{
+      display:grid;
+      grid-template-columns: 80px 1fr;
+      gap: 12px;
+      align-items:start;
+    }
+    .camRight .row{margin:0}
+    #camVideo{
+      width: 320px;
+      max-width: 100%;
+      border-radius: 12px;
+      border: 1px solid #e5e7eb;
+      background:#111;
+      display:none;
+    }
+        .dateRangeGroup{
+    display:flex;
+    gap: var(--gap);
+    align-items:center;
+    flex-wrap: nowrap;          /* ép From và To luôn trên 1 hàng */
+    min-width: 320px;           /* đủ chỗ cho 2 ô date */
+    }
+
+    .dateField{
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    min-width:150px;            /* mỗi ô date */
+    }
+
+    #camCanvas{display:none}
+    a.linkBtn{display:inline-block;text-decoration:none}
+    @media (max-width:980px){.threeCol{grid-template-columns:1fr}}
+    @media (max-width:900px){.twoCol{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="row" style="justify-content:space-between">
+    <h2>Patient Management</h2>
+    <a class="linkBtn btn" href="/index.html">Back to Dashboard</a>
+  </div>
+
+  <!-- Filters -->
+  <div class="pane">
+    <div class="row">
+      <div style="display:flex;flex-direction:column;gap:6px;min-width:340px;flex:1">
+        <div style="font-weight:700;font-size:13px">Quick Search:</div>
+        <input id="pQ" type="text" placeholder="Name, MRN, card number, doctor, relative..." />
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px;min-width:170px">
+        <div style="font-weight:700;font-size:13px">Status:</div>
+        <select id="pStatus"></select>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px;min-width:190px">
+        <div style="font-weight:700;font-size:13px">Primary Doctor:</div>
+        <select id="pDoctor"></select>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:6px;min-width:190px">
+        <div style="font-weight:700;font-size:13px">Department:</div>
+        <select id="pDept"></select>
+      </div>
+
+        <div class="dateRangeGroup">
+        <div class="dateField">
+            <div style="font-weight:700;font-size:13px">From:</div>
+            <input id="pFrom" type="date" />
+        </div>
+
+        <div class="dateField">
+            <div style="font-weight:700;font-size:13px">To:</div>
+            <input id="pTo" type="date" />
+        </div>
+        </div>
+
+    </div>
+
+    <div class="row" style="justify-content:space-between">
+      <div style="display:flex;flex-direction:column;gap:6px;min-width:220px">
+        <div style="font-weight:700;font-size:13px">Sort by:</div>
+        <select id="pSort">
+          <option value="newestAdmission">Newest Admission</option>
+          <option value="oldestAdmission">Oldest Admission</option>
+          <option value="nameAZ">Name A–Z</option>
+          <option value="nameZA">Name Z–A</option>
+        </select>
+      </div>
+
+      <div class="row" style="margin:0">
+        <button id="pLoadBtn" class="btn">Load</button>
+        <button id="pResetFiltersBtn" class="btn">Reset Filters</button>
+        <button id="pExportBtn" class="btn">Export CSV</button>
+        <button id="pAddBtn" class="btn primary">Add Patient</button>
+        <span id="pTopMsg" class="msg"></span>
+      </div>
+    </div>
+    <div class="hint">
+    </div>
+  </div>
+
+  <!-- List -->
+  <div class="card">
+    <h3 style="margin:0 0 10px 0">Patient List (<span id="pCount">0</span>)</h3>
+    <div class="tableWrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Photo</th>
+            <th>Name</th>
+            <th>MRN</th>
+            <th>Admission</th>
+            <th>Status</th>
+            <th>Doctor</th>
+            <th>Card #</th>
+            <th>Relative</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="pTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- datalist for form suggestions -->
+  <datalist id="deptList"></datalist>
+  <datalist id="doctorList"></datalist>
+
+  <!-- ===================== ADD/EDIT MODAL ===================== -->
+  <div id="pFormOverlay" class="modalOverlay">
+    <div class="modalBox">
+      <div class="modalHeader">
+        <div>
+          <h3 id="pFormTitle">Add Patient</h3>
+          <div class="hint" id="pFormSub">Fill required fields (*) then Save.</div>
+        </div>
+        <button id="pFormClose" class="modalClose">Close</button>
+      </div>
+      <div class="modalBody">
+        <div class="field">
+          <label>Personal Photo (Camera):</label>
+
+          <div class="camWrap">
+            <div>
+              <img id="pCurrentPhoto" alt="photo"
+                   style="display:none;width:72px;height:72px;border-radius:14px;object-fit:cover;border:1px solid #e5e7eb;background:#eef2f7"/>
+              <span id="pNoPhoto" style="display:inline-block;width:72px;height:72px;border-radius:14px;border:1px solid #e5e7eb;background:#eef2f7"></span>
+            </div>
+
+            <div class="camRight">
+              <div class="row">
+                <button id="camStartBtn" class="btn">Start Camera</button>
+                <button id="camCaptureBtn" class="btn primary" disabled>Capture</button>
+                <button id="camStopBtn" class="btn" disabled>Stop</button>
+              </div>
+
+              <video id="camVideo" autoplay playsinline></video>
+              <canvas id="camCanvas"></canvas>
+
+              <div class="hint">
+                Camera cần chạy trên <strong>https</strong> hoặc <strong>localhost</strong>. Capture xong sẽ tự set preview và upload khi Save.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Patient Full Name: <span class="req">*</span></label>
+          <input id="fFullName" type="text" placeholder="Enter patient name"/>
+        </div>
+
+        <div class="field">
+          <label>Patient ID / MRN: <span class="req">*</span></label>
+          <div class="row" style="margin:0">
+            <input id="fMrn" type="text" placeholder="MRN-YYYY-XXX" style="flex:1;min-width:200px"/>
+            <button id="fGenMrn" class="btn">Generate</button>
+          </div>
+        </div>
+
+        <div class="twoCol">
+          <div class="field">
+            <label>Date of Birth:</label>
+            <input id="fDob" type="date"/>
+          </div>
+          <div class="field">
+            <label>Gender:</label>
+            <select id="fGender">
+              <option value="">-- Select --</option>
+              <option>Male</option>
+              <option>Female</option>
+              <option>Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Admission Date: <span class="req">*</span></label>
+          <input id="fAdmission" type="date"/>
+        </div>
+
+        <div class="field">
+          <label>Patient Status: <span class="req">*</span></label>
+          <select id="fStatus">
+            <option>Stable</option>
+            <option>Under Observation</option>
+            <option>Critical</option>
+            <option>Discharged</option>
+          </select>
+        </div>
+
+        <div class="threeCol">
+          <div class="field">
+            <label>Department:</label>
+            <input id="fDept" type="text" placeholder="e.g., Cardiology" list="deptList"/>
+          </div>
+          <div class="field">
+            <label>Ward:</label>
+            <input id="fWard" type="text" placeholder="e.g., Ward A"/>
+          </div>
+          <div class="field">
+            <label>Room-Bed:</label>
+            <input id="fRoomBed" type="text" placeholder="e.g., A-201-1"/>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Primary Doctor: <span class="req">*</span></label>
+          <input id="fDoctor" type="text" placeholder="Enter doctor name" list="doctorList"/>
+        </div>
+
+        <div class="field">
+          <label>Card Number (RFID/UID): <span class="req">*</span></label>
+          <input id="fCard" type="text" placeholder="Enter card number"/>
+        </div>
+
+        <div class="field">
+          <label>Relative/Guardian Name: <span class="req">*</span></label>
+          <input id="fRelName" type="text" placeholder="Enter relative name"/>
+        </div>
+
+        <div class="field">
+          <label>Relative/Guardian Phone: <span class="req">*</span></label>
+          <input id="fRelPhone" type="text" placeholder="Enter phone number"/>
+        </div>
+
+        <div class="field">
+          <label>Insurance / Policy ID:</label>
+          <input id="fIns" type="text" placeholder="Enter insurance ID"/>
+        </div>
+
+        <div class="row" style="margin-top:8px">
+          <button id="fSave" class="btn primary">Save</button>
+          <button id="fReset" class="btn">Reset</button>
+          <span id="pFormMsg" class="msg"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PATIENT DETAILS MODAL ===================== -->
+  <div id="pDetailsOverlay" class="modalOverlay">
+    <div class="modalBox">
+      <div class="modalHeader">
+        <div>
+          <h3 id="pDetailsTitle">Patient Details</h3>
+          <div class="hint" id="pDetailsSub"></div>
+        </div>
+        <button id="pDetailsClose" class="modalClose">Close</button>
+      </div>
+
+      <div class="modalBody">
+        <div class="modalTabs">
+          <button class="modalTab active" data-tab="overview">Overview</button>
+          <button class="modalTab" data-tab="timeline">Treatment Timeline</button>
+          <button class="modalTab" data-tab="rx">Prescriptions</button>
+          <button class="modalTab" data-tab="notes">Clinical Notes</button>
+        </div>
+
+        <div class="modalPanel show" data-panel="overview">
+          <div id="pOverviewBox" class="pane" style="border:none;padding:0"></div>
+        </div>
+
+        <div class="modalPanel" data-panel="timeline">
+          <div class="pane" style="border:none;padding:0">
+            <h4 style="margin:0 0 10px 0">Add timeline event</h4>
+            <div class="row">
+              <input id="tlAt" type="datetime-local" class="smallInput"/>
+              <input id="tlTitle" type="text" placeholder="Title (required)" style="min-width:260px"/>
+              <input id="tlBy" type="text" placeholder="Created by (optional)" class="smallInput"/>
+              <button id="tlAddBtn" class="btn primary">Add</button>
+            </div>
+            <textarea id="tlDesc" class="textarea" placeholder="Description (optional)"></textarea>
+
+            <h4 style="margin:14px 0 8px 0">Timeline</h4>
+            <div class="tableWrap">
+              <table>
+                <thead>
+                  <tr><th>Time</th><th>Title</th><th>By</th><th>Description</th><th>Action</th></tr>
+                </thead>
+                <tbody id="tlTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="modalPanel" data-panel="rx">
+          <div class="pane" style="border:none;padding:0">
+            <h4 style="margin:0 0 10px 0">Add prescription</h4>
+            <div class="row">
+              <input id="rxMed" type="text" placeholder="Medication (required)" style="min-width:240px"/>
+              <input id="rxDose" type="text" placeholder="Dosage (required)" class="smallInput"/>
+              <input id="rxFreq" type="text" placeholder="Frequency (required)" class="smallInput"/>
+            </div>
+            <div class="row">
+              <input id="rxStart" type="date" class="smallInput"/>
+              <input id="rxEnd" type="date" class="smallInput"/>
+              <input id="rxBy" type="text" placeholder="Prescribed by (optional)" class="smallInput"/>
+              <button id="rxAddBtn" class="btn primary">Add</button>
+            </div>
+            <textarea id="rxInst" class="textarea" placeholder="Instructions (optional)"></textarea>
+
+            <h4 style="margin:14px 0 8px 0">Prescriptions</h4>
+            <div class="tableWrap">
+              <table>
+                <thead>
+                  <tr><th>Medication</th><th>Dosage</th><th>Freq</th><th>Start</th><th>End</th><th>Status</th><th>Action</th></tr>
+                </thead>
+                <tbody id="rxTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="modalPanel" data-panel="notes">
+          <div class="pane" style="border:none;padding:0">
+            <h4 style="margin:0 0 10px 0">Add note</h4>
+            <div class="row">
+              <input id="ntBy" type="text" placeholder="Created by (optional)" class="smallInput"/>
+              <button id="ntAddBtn" class="btn primary">Add</button>
+            </div>
+            <textarea id="ntText" class="textarea" placeholder="Note text (required)"></textarea>
+
+            <h4 style="margin:14px 0 8px 0">Notes</h4>
+            <div class="tableWrap">
+              <table>
+                <thead>
+                  <tr><th>Time</th><th>By</th><th>Text</th><th>Action</th></tr>
+                </thead>
+                <tbody id="ntTableBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px">
+          <span id="pDetailsMsg" class="msg"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const API = location.origin;
+
+  // ===== helpers =====
+  function safe(s){
+    return String(s ?? '')
+      .replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')
+      .replaceAll('"','&quot;').replaceAll("'","&#039;");
+  }
+  function showMsg(el, text, ok=true){
+    el.textContent = text;
+    el.className = 'msg ' + (ok ? 'ok':'err');
+    setTimeout(()=>{ el.className='msg'; }, 2500);
+  }
+  function badgeClass(status){
+    const s = String(status||'').toLowerCase();
+    if (s.includes('stable')) return 'badge bStable';
+    if (s.includes('observation')) return 'badge bObserve';
+    if (s.includes('critical')) return 'badge bCritical';
+    if (s.includes('discharged')) return 'badge bDischarged';
+    return 'badge bObserve';
+  }
+  function fmtDatetime(d){
+    if(!d) return '';
+    const dt = new Date(d);
+    if(Number.isNaN(dt.getTime())) return '';
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth()+1).padStart(2,'0');
+    const da = String(dt.getDate()).padStart(2,'0');
+    const hh = String(dt.getHours()).padStart(2,'0');
+    const mi = String(dt.getMinutes()).padStart(2,'0');
+    return `${y}-${m}-${da} ${hh}:${mi}`;
+  }
+  function isoToLocalDatetimeInput(d){
+    if(!d) return '';
+    const dt = new Date(d);
+    if(Number.isNaN(dt.getTime())) return '';
+    const yyyy = dt.getFullYear();
+    const mm = String(dt.getMonth()+1).padStart(2,'0');
+    const dd = String(dt.getDate()).padStart(2,'0');
+    const hh = String(dt.getHours()).padStart(2,'0');
+    const mi = String(dt.getMinutes()).padStart(2,'0');
+    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+  }
+
+  // ===== filters + list =====
+  const pQ = document.getElementById('pQ');
+  const pStatus = document.getElementById('pStatus');
+  const pDoctor = document.getElementById('pDoctor');
+  const pDept = document.getElementById('pDept');
+  const pFrom = document.getElementById('pFrom');
+  const pTo = document.getElementById('pTo');
+  const pSort = document.getElementById('pSort');
+  const pLoadBtn = document.getElementById('pLoadBtn');
+  const pResetFiltersBtn = document.getElementById('pResetFiltersBtn');
+  const pExportBtn = document.getElementById('pExportBtn');
+  const pAddBtn = document.getElementById('pAddBtn');
+  const pTopMsg = document.getElementById('pTopMsg');
+
+  const pCount = document.getElementById('pCount');
+  const pTableBody = document.getElementById('pTableBody');
+
+  const deptList = document.getElementById('deptList');
+  const doctorList = document.getElementById('doctorList');
+
+  let patientsCache = [];
+
+  function buildParams(){
+    const params = new URLSearchParams();
+    if (pQ.value.trim()) params.set('q', pQ.value.trim());
+    if (pStatus.value) params.set('status', pStatus.value);
+    if (pDoctor.value) params.set('doctor', pDoctor.value);
+    if (pDept.value) params.set('department', pDept.value);
+    if (pFrom.value) params.set('from', pFrom.value);
+    if (pTo.value) params.set('to', pTo.value);
+    if (pSort.value) params.set('sort', pSort.value);
+    params.set('_t', Date.now());
+    return params;
+  }
+
+  async function loadMeta(){
+    try{
+      const res = await fetch(`${API}/api/patients/meta?_t=` + Date.now(), { headers:{'Cache-Control':'no-cache'} });
+      const data = await res.json().catch(()=>({}));
+      if(!res.ok) return;
+
+      const statuses = (data.statuses && data.statuses.length)
+        ? data.statuses
+        : ['Stable','Under Observation','Critical','Discharged'];
+
+      pStatus.innerHTML = `<option value="">-- All --</option>` + statuses.map(s=>`<option>${safe(s)}</option>`).join('');
+      pDoctor.innerHTML = `<option value="">-- All --</option>` + (data.doctors||[]).map(s=>`<option>${safe(s)}</option>`).join('');
+      pDept.innerHTML = `<option value="">-- All --</option>` + (data.departments||[]).map(s=>`<option>${safe(s)}</option>`).join('');
+
+      deptList.innerHTML = (data.departments||[]).map(s=>`<option value="${safe(s)}"></option>`).join('');
+      doctorList.innerHTML = (data.doctors||[]).map(s=>`<option value="${safe(s)}"></option>`).join('');
+    }catch(e){}
+  }
+
+  async function loadPatients(){
+    try{
+      const res = await fetch(`${API}/api/patients?` + buildParams().toString(), { headers:{'Cache-Control':'no-cache'} });
+      const data = await res.json().catch(()=>[]);
+      if(!res.ok){
+        showMsg(pTopMsg, data.message || 'Load failed', false);
+        return;
+      }
+      patientsCache = data;
+      pCount.textContent = String(data.length);
+      renderTable(data);
+      showMsg(pTopMsg, 'Loaded');
+    }catch(e){
+      showMsg(pTopMsg, 'Server connection error', false);
+    }
+  }
+
+  function renderTable(list){
+    pTableBody.innerHTML = list.map(p=>{
+      const img = p.photoUrl ? `<img class="photoSmall" src="${p.photoUrl}" alt="photo">` : `<span class="photoSmall"></span>`;
+      return `
+        <tr data-id="${p._id}">
+          <td>${img}</td>
+          <td><strong>${safe(p.fullName||'')}</strong></td>
+          <td>${safe(p.mrn||'')}</td>
+          <td>${safe((p.admissionDate||'').slice(0,10))}</td>
+          <td><span class="${badgeClass(p.status)}">${safe(p.status||'')}</span></td>
+          <td>${safe(p.primaryDoctor||'')}</td>
+          <td>${safe(p.cardNumber||'')}</td>
+          <td>${safe(p.relativeName||'')}</td>
+          <td>
+            <div class="actions">
+              <button class="btn small" data-edit="${p._id}">Edit</button>
+              <button class="btn small danger" data-del="${p._id}">Delete</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  // ✅ Event delegation:
+  // - Click Edit/Delete => chạy đúng action
+  // - Click vào row (trừ khi click trúng button) => mở Details modal
+  pTableBody.addEventListener('click', async (e)=>{
+    const delBtn = e.target.closest('button[data-del]');
+    if (delBtn){
+      const id = delBtn.getAttribute('data-del');
+      if(!confirm('Delete this patient (and all related details)?')) return;
+      const res = await fetch(`${API}/api/patients/${id}`, { method:'DELETE' });
+      const data = await res.json().catch(()=>({}));
+      if(!res.ok){
+        showMsg(pTopMsg, data.message || 'Delete failed', false);
+        return;
+      }
+      showMsg(pTopMsg, 'Deleted');
+      await loadMeta();
+      await loadPatients();
+      return;
+    }
+
+    const editBtn = e.target.closest('button[data-edit]');
+    if (editBtn){
+      const id = editBtn.getAttribute('data-edit');
+      const p = patientsCache.find(x=>x._id===id);
+      if(!p) return;
+      openFormModal('edit', p);
+      return;
+    }
+
+    const tr = e.target.closest('tr[data-id]');
+    if (tr){
+      const id = tr.getAttribute('data-id');
+      await openDetailsModal(id);
+    }
+  });
+
+  pLoadBtn.addEventListener('click', loadPatients);
+
+  // ✅ Reset filters: clear all + default sort + reload
+  function resetFiltersAndReload(){
+    pQ.value = '';
+    pStatus.value = '';
+    pDoctor.value = '';
+    pDept.value = '';
+    pFrom.value = '';
+    pTo.value = '';
+    pSort.value = 'newestAdmission';
+    showMsg(pTopMsg, 'Filters reset');
+    loadPatients();
+  }
+  pResetFiltersBtn.addEventListener('click', resetFiltersAndReload);
+
+  pExportBtn.addEventListener('click', ()=>{
+    const params = buildParams();
+    params.delete('_t');
+    window.location = `${API}/api/patients/export/csv?` + params.toString();
+  });
+
+  // ===== Add/Edit Modal logic =====
+  const pFormOverlay = document.getElementById('pFormOverlay');
+  const pFormClose = document.getElementById('pFormClose');
+  const pFormTitle = document.getElementById('pFormTitle');
+  const pFormSub = document.getElementById('pFormSub');
+  const pFormMsg = document.getElementById('pFormMsg');
+
+  const pCurrentPhoto = document.getElementById('pCurrentPhoto');
+  const pNoPhoto = document.getElementById('pNoPhoto');
+
+  const fFullName = document.getElementById('fFullName');
+  const fMrn = document.getElementById('fMrn');
+  const fGenMrn = document.getElementById('fGenMrn');
+  const fDob = document.getElementById('fDob');
+  const fGender = document.getElementById('fGender');
+  const fAdmission = document.getElementById('fAdmission');
+  const fStatus = document.getElementById('fStatus');
+  const fDept = document.getElementById('fDept');
+  const fWard = document.getElementById('fWard');
+  const fRoomBed = document.getElementById('fRoomBed');
+  const fDoctor = document.getElementById('fDoctor');
+  const fCard = document.getElementById('fCard');
+  const fRelName = document.getElementById('fRelName');
+  const fRelPhone = document.getElementById('fRelPhone');
+  const fIns = document.getElementById('fIns');
+  const fSave = document.getElementById('fSave');
+  const fReset = document.getElementById('fReset');
+
+  let editingPatientId = null;
+
+  // ===== CAMERA controls =====
+  const camStartBtn = document.getElementById('camStartBtn');
+  const camCaptureBtn = document.getElementById('camCaptureBtn');
+  const camStopBtn = document.getElementById('camStopBtn');
+  const camVideo = document.getElementById('camVideo');
+  const camCanvas = document.getElementById('camCanvas');
+
+  let camStream = null;
+  let capturedBlob = null;          // blob sẽ upload
+  let previewObjectUrl = null;      // objectURL cho preview
+
+  function setPhotoPreview(src){
+    pCurrentPhoto.src = src;
+    pCurrentPhoto.style.display = 'inline-block';
+    pNoPhoto.style.display = 'none';
+  }
+  function setNoPhoto(){
+    pCurrentPhoto.style.display = 'none';
+    pNoPhoto.style.display = 'inline-block';
+  }
+
+  function cleanupPreviewObjectUrl(){
+    if (previewObjectUrl){
+      try{ URL.revokeObjectURL(previewObjectUrl); }catch(e){}
+      previewObjectUrl = null;
+    }
+  }
+
+  async function startCamera(){
+    try{
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+        showMsg(pFormMsg, 'Browser does not support camera', false);
+        return;
+      }
+      // stop old if any
+      stopCamera();
+
+      camStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user' },
+        audio: false
+      });
+      camVideo.srcObject = camStream;
+      camVideo.style.display = 'block';
+
+      camCaptureBtn.disabled = false;
+      camStopBtn.disabled = false;
+      camStartBtn.disabled = true;
+
+      showMsg(pFormMsg, 'Camera started');
+    }catch(err){
+      showMsg(pFormMsg, 'Cannot access camera (check permission / https / localhost)', false);
+    }
+  }
+
+  function stopCamera(){
+    if (camStream){
+      try{
+        camStream.getTracks().forEach(t=>t.stop());
+      }catch(e){}
+    }
+    camStream = null;
+    camVideo.srcObject = null;
+    camVideo.style.display = 'none';
+
+    camCaptureBtn.disabled = true;
+    camStopBtn.disabled = true;
+    camStartBtn.disabled = false;
+  }
+
+  async function captureFromCamera(){
+    if (!camStream) return;
+
+    // ensure video metadata ready
+    const vw = camVideo.videoWidth || 640;
+    const vh = camVideo.videoHeight || 480;
+
+    camCanvas.width = vw;
+    camCanvas.height = vh;
+
+    const ctx = camCanvas.getContext('2d');
+    ctx.drawImage(camVideo, 0, 0, vw, vh);
+
+    // convert to JPEG blob
+    camCanvas.toBlob((blob)=>{
+      if (!blob){
+        showMsg(pFormMsg, 'Capture failed', false);
+        return;
+      }
+      capturedBlob = blob;
+
+      cleanupPreviewObjectUrl();
+      previewObjectUrl = URL.createObjectURL(blob);
+      setPhotoPreview(previewObjectUrl);
+
+      showMsg(pFormMsg, 'Captured photo');
+    }, 'image/jpeg', 0.9);
+  }
+
+  camStartBtn.addEventListener('click', startCamera);
+  camStopBtn.addEventListener('click', ()=>{
+    stopCamera();
+    showMsg(pFormMsg, 'Camera stopped');
+  });
+  camCaptureBtn.addEventListener('click', captureFromCamera);
+
+  // ===== modal open/close =====
+  function openOverlay(overlay){
+    overlay.classList.add('show');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeOverlay(overlay){
+    overlay.classList.remove('show');
+    document.body.style.overflow = '';
+  }
+
+  function resetForm(){
+    editingPatientId = null;
+
+    // reset camera + captured
+    stopCamera();
+    capturedBlob = null;
+    cleanupPreviewObjectUrl();
+
+    fFullName.value='';
+    fMrn.value='';
+    fDob.value='';
+    fGender.value='';
+    fAdmission.value='';
+    fStatus.value='Stable';
+    fDept.value='';
+    fWard.value='';
+    fRoomBed.value='';
+    fDoctor.value='';
+    fCard.value='';
+    fRelName.value='';
+    fRelPhone.value='';
+    fIns.value='';
+
+    setNoPhoto();
+    showMsg(pFormMsg, 'Reset');
+  }
+
+  function fillForm(p){
+    // reset captured but keep existing photo preview
+    stopCamera();
+    capturedBlob = null;
+    cleanupPreviewObjectUrl();
+
+    fFullName.value = p.fullName || '';
+    fMrn.value = p.mrn || '';
+    fDob.value = p.dob ? String(p.dob).slice(0,10) : '';
+    fGender.value = p.gender || '';
+    fAdmission.value = p.admissionDate ? String(p.admissionDate).slice(0,10) : '';
+    fStatus.value = p.status || 'Stable';
+    fDept.value = p.department || '';
+    fWard.value = p.ward || '';
+    fRoomBed.value = p.roomBed || '';
+    fDoctor.value = p.primaryDoctor || '';
+    fCard.value = p.cardNumber || '';
+    fRelName.value = p.relativeName || '';
+    fRelPhone.value = p.relativePhone || '';
+    fIns.value = p.insurancePolicyId || '';
+
+    if(p.photoUrl){
+      setPhotoPreview(p.photoUrl);
+    }else{
+      setNoPhoto();
+    }
+  }
+
+  function closeFormModal(){
+    stopCamera();
+    capturedBlob = null;
+    cleanupPreviewObjectUrl();
+    closeOverlay(pFormOverlay);
+  }
+
+  function openFormModal(mode, patient){
+    if(mode==='add'){
+      pFormTitle.textContent = 'Add Patient';
+      pFormSub.textContent = 'Fill required fields (*) then Save.';
+      resetForm();
+      openOverlay(pFormOverlay);
+      return;
+    }
+    editingPatientId = patient._id;
+    pFormTitle.textContent = 'Edit Patient';
+    pFormSub.textContent = `Editing: ${patient.fullName || ''} (${patient.mrn || ''})`;
+    fillForm(patient);
+    openOverlay(pFormOverlay);
+  }
+
+  pAddBtn.addEventListener('click', ()=>openFormModal('add'));
+  pFormClose.addEventListener('click', closeFormModal);
+  pFormOverlay.addEventListener('click', (e)=>{ if(e.target===pFormOverlay) closeFormModal(); });
+  fReset.addEventListener('click', resetForm);
+
+  fGenMrn.addEventListener('click', async ()=>{
+    try{
+      const res = await fetch(`${API}/api/patients/mrn/generate?_t=` + Date.now());
+      const data = await res.json().catch(()=>({}));
+      if(!res.ok){ showMsg(pFormMsg, data.message || 'Generate failed', false); return; }
+      fMrn.value = data.mrn || '';
+      showMsg(pFormMsg, 'Generated MRN');
+    }catch(e){
+      showMsg(pFormMsg, 'Server connection error', false);
+    }
+  });
+
+  fSave.addEventListener('click', async ()=>{
+    const must = [
+      ['Full Name', fFullName.value],
+      ['MRN', fMrn.value],
+      ['Admission Date', fAdmission.value],
+      ['Status', fStatus.value],
+      ['Primary Doctor', fDoctor.value],
+      ['Card Number', fCard.value],
+      ['Relative Name', fRelName.value],
+      ['Relative Phone', fRelPhone.value]
+    ];
+    for (const [k,v] of must){
+      if(!String(v||'').trim()){
+        showMsg(pFormMsg, `${k} is required`, false);
+        return;
+      }
+    }
+
+    const fd = new FormData();
+
+    // ✅ nếu có ảnh chụp từ camera => upload ảnh đó
+    if (capturedBlob){
+      fd.append('photo', capturedBlob, `patient_${Date.now()}.jpg`);
+    }
+
+    fd.append('fullName', fFullName.value.trim());
+    fd.append('mrn', fMrn.value.trim());
+    if (fDob.value) fd.append('dob', fDob.value);
+    if (fGender.value) fd.append('gender', fGender.value);
+    fd.append('admissionDate', fAdmission.value);
+    fd.append('status', fStatus.value);
+
+    if (fDept.value.trim()) fd.append('department', fDept.value.trim());
+    if (fWard.value.trim()) fd.append('ward', fWard.value.trim());
+    if (fRoomBed.value.trim()) fd.append('roomBed', fRoomBed.value.trim());
+
+    fd.append('primaryDoctor', fDoctor.value.trim());
+    fd.append('cardNumber', fCard.value.trim());
+    fd.append('relativeName', fRelName.value.trim());
+    fd.append('relativePhone', fRelPhone.value.trim());
+    if (fIns.value.trim()) fd.append('insurancePolicyId', fIns.value.trim());
+
+    try{
+      const isEdit = !!editingPatientId;
+      const url = isEdit ? `${API}/api/patients/${editingPatientId}` : `${API}/api/patients`;
+      const method = isEdit ? 'PUT' : 'POST';
+
+      const res = await fetch(url, { method, body: fd });
+      const data = await res.json().catch(()=>({}));
+      if(!res.ok){
+        showMsg(pFormMsg, data.message || 'Save failed', false);
+        return;
+      }
+
+      showMsg(pFormMsg, isEdit ? 'Updated' : 'Created');
+      closeFormModal();
+
+      await loadMeta();
+      await loadPatients();
+    }catch(e){
+      showMsg(pFormMsg, 'Server connection error', false);
+    }
+  });
+
+  // ===== Patient Details Modal logic =====
+  const pDetailsOverlay = document.getElementById('pDetailsOverlay');
+  const pDetailsClose = document.getElementById('pDetailsClose');
+  const pDetailsTitle = document.getElementById('pDetailsTitle');
+  const pDetailsSub = document.getElementById('pDetailsSub');
+  const pDetailsMsg = document.getElementById('pDetailsMsg');
+
+  const tabs = pDetailsOverlay.querySelectorAll('.modalTab');
+  const panels = pDetailsOverlay.querySelectorAll('.modalPanel');
+
+  const overviewBox = document.getElementById('pOverviewBox');
+
+  const tlAt = document.getElementById('tlAt');
+  const tlTitle = document.getElementById('tlTitle');
+  const tlBy = document.getElementById('tlBy');
+  const tlDesc = document.getElementById('tlDesc');
+  const tlAddBtn = document.getElementById('tlAddBtn');
+  const tlTableBody = document.getElementById('tlTableBody');
+
+  const rxMed = document.getElementById('rxMed');
+  const rxDose = document.getElementById('rxDose');
+  const rxFreq = document.getElementById('rxFreq');
+  const rxStart = document.getElementById('rxStart');
+  const rxEnd = document.getElementById('rxEnd');
+  const rxBy = document.getElementById('rxBy');
+  const rxInst = document.getElementById('rxInst');
+  const rxAddBtn = document.getElementById('rxAddBtn');
+  const rxTableBody = document.getElementById('rxTableBody');
+
+  const ntBy = document.getElementById('ntBy');
+  const ntText = document.getElementById('ntText');
+  const ntAddBtn = document.getElementById('ntAddBtn');
+  const ntTableBody = document.getElementById('ntTableBody');
+
+  let detailsPatientId = null;
+
+  function showDetailsMsg(text, ok=true){
+    pDetailsMsg.textContent = text;
+    pDetailsMsg.className = 'msg ' + (ok ? 'ok' : 'err');
+    setTimeout(()=>{ pDetailsMsg.className='msg'; }, 2500);
+  }
+
+  function openDetailsOverlay(){
+    pDetailsOverlay.classList.add('show');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeDetailsOverlay(){
+    pDetailsOverlay.classList.remove('show');
+    document.body.style.overflow = '';
+    detailsPatientId = null;
+  }
+
+  pDetailsClose.addEventListener('click', closeDetailsOverlay);
+  pDetailsOverlay.addEventListener('click', (e)=>{ if(e.target===pDetailsOverlay) closeDetailsOverlay(); });
+
+  tabs.forEach(t=>{
+    t.addEventListener('click', ()=>{
+      tabs.forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      const key = t.getAttribute('data-tab');
+      panels.forEach(p=>p.classList.toggle('show', p.getAttribute('data-panel') === key));
+    });
+  });
+
+  async function openDetailsModal(patientId){
+    detailsPatientId = patientId;
+    openDetailsOverlay();
+
+    tabs.forEach(x=>x.classList.remove('active'));
+    tabs[0].classList.add('active');
+    panels.forEach(p=>p.classList.toggle('show', p.getAttribute('data-panel') === 'overview'));
+
+    await loadDetails();
+  }
+
+  async function loadDetails(){
+    try{
+      const res = await fetch(`${API}/api/patients/${detailsPatientId}/details?_t=` + Date.now(), {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      const data = await res.json().catch(()=>({}));
+      if(!res.ok){
+        showDetailsMsg(data.message || res.statusText, false);
+        return;
+      }
+
+      const p = data.patient;
+      pDetailsTitle.textContent = `${p.fullName || 'Patient Details'}`;
+      pDetailsSub.textContent = `MRN: ${p.mrn || '-'} | Status: ${p.status || '-'} | Doctor: ${p.primaryDoctor || '-'}`;
+
+      renderOverview(p);
+      renderTimeline(data.timeline || []);
+      renderRx(data.prescriptions || []);
+      renderNotes(data.notes || []);
+
+      tlAt.value = isoToLocalDatetimeInput(new Date());
+    }catch(e){
+      showDetailsMsg('Server connection error', false);
+    }
+  }
+
+  function renderOverview(p){
+    const photo = p.photoUrl ? `<img class="photoSmall" src="${p.photoUrl}" alt="photo"/>` : `<span class="photoSmall"></span>`;
+    overviewBox.innerHTML = `
+      <div class="row" style="align-items:center">
+        <div>${photo}</div>
+        <div style="flex:1">
+          <div><strong>${safe(p.fullName||'')}</strong></div>
+          <div class="hint">Admission: ${safe((p.admissionDate||'').slice(0,10))} | Card: ${safe(p.cardNumber||'')}</div>
+        </div>
+        <div><span class="${badgeClass(p.status)}">${safe(p.status||'')}</span></div>
+      </div>
+
+      <table style="margin-top:10px">
+        <tbody>
+          <tr><th style="width:180px">Primary Doctor</th><td>${safe(p.primaryDoctor||'')}</td></tr>
+          <tr><th>Department</th><td>${safe(p.department||'')}</td></tr>
+          <tr><th>Ward</th><td>${safe(p.ward||'')}</td></tr>
+          <tr><th>Room-Bed</th><td>${safe(p.roomBed||'')}</td></tr>
+          <tr><th>Relative</th><td>${safe(p.relativeName||'')} (${safe(p.relativePhone||'')})</td></tr>
+          <tr><th>Insurance/Policy</th><td>${safe(p.insurancePolicyId||'')}</td></tr>
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderTimeline(items){
+    tlTableBody.innerHTML = items.map(it=>`
+      <tr>
+        <td>${safe(fmtDatetime(it.at))}</td>
+        <td>${safe(it.title||'')}</td>
+        <td>${safe(it.createdBy||'')}</td>
+        <td>${safe(it.description||'')}</td>
+        <td><button class="btn small danger" data-tl-del="${it._id}">Delete</button></td>
+      </tr>
+    `).join('');
+
+    tlTableBody.querySelectorAll('button[data-tl-del]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const tid = btn.getAttribute('data-tl-del');
+        if(!confirm('Delete this timeline item?')) return;
+        const res = await fetch(`${API}/api/patients/${detailsPatientId}/timeline/${tid}`, { method:'DELETE' });
+        if(!res.ok) { showDetailsMsg('Delete failed', false); return; }
+        showDetailsMsg('Deleted');
+        await loadDetails();
+      });
+    });
+  }
+
+  function renderRx(items){
+    rxTableBody.innerHTML = items.map(it=>`
+      <tr>
+        <td>${safe(it.medication||'')}</td>
+        <td>${safe(it.dosage||'')}</td>
+        <td>${safe(it.frequency||'')}</td>
+        <td>${safe((it.startDate||'').slice(0,10))}</td>
+        <td>${safe((it.endDate||'').slice(0,10))}</td>
+        <td>
+          <select class="smallInput" data-rx-status="${it._id}">
+            ${['Active','Stopped','Completed'].map(s=>`<option value="${s}" ${it.status===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </td>
+        <td><button class="btn small danger" data-rx-del="${it._id}">Delete</button></td>
+      </tr>
+    `).join('');
+
+    rxTableBody.querySelectorAll('select[data-rx-status]').forEach(sel=>{
+      sel.addEventListener('change', async ()=>{
+        const pid = sel.getAttribute('data-rx-status');
+        const status = sel.value;
+        const res = await fetch(`${API}/api/patients/${detailsPatientId}/prescriptions/${pid}`,{
+          method:'PUT',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ status })
+        });
+        if(!res.ok) { showDetailsMsg('Update status failed', false); return; }
+        showDetailsMsg('Status updated');
+      });
+    });
+
+    rxTableBody.querySelectorAll('button[data-rx-del]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const pid = btn.getAttribute('data-rx-del');
+        if(!confirm('Delete this prescription?')) return;
+        const res = await fetch(`${API}/api/patients/${detailsPatientId}/prescriptions/${pid}`, { method:'DELETE' });
+        if(!res.ok) { showDetailsMsg('Delete failed', false); return; }
+        showDetailsMsg('Deleted');
+        await loadDetails();
+      });
+    });
+  }
+
+  function renderNotes(items){
+    ntTableBody.innerHTML = items.map(it=>`
+      <tr>
+        <td>${safe(fmtDatetime(it.createdAt))}</td>
+        <td>${safe(it.createdBy||'')}</td>
+        <td>${safe(it.text||'')}</td>
+        <td><button class="btn small danger" data-nt-del="${it._id}">Delete</button></td>
+      </tr>
+    `).join('');
+
+    ntTableBody.querySelectorAll('button[data-nt-del]').forEach(btn=>{
+      btn.addEventListener('click', async ()=>{
+        const nid = btn.getAttribute('data-nt-del');
+        if(!confirm('Delete this note?')) return;
+        const res = await fetch(`${API}/api/patients/${detailsPatientId}/notes/${nid}`, { method:'DELETE' });
+        if(!res.ok) { showDetailsMsg('Delete failed', false); return; }
+        showDetailsMsg('Deleted');
+        await loadDetails();
+      });
+    });
+  }
+
+  tlAddBtn.addEventListener('click', async ()=>{
+    const title = (tlTitle.value||'').trim();
+    if(!title){ showDetailsMsg('Timeline title is required', false); return; }
+
+    const payload = {
+      title,
+      description: (tlDesc.value||'').trim(),
+      createdBy: (tlBy.value||'').trim(),
+      at: tlAt.value ? new Date(tlAt.value).toISOString() : undefined
+    };
+
+    const res = await fetch(`${API}/api/patients/${detailsPatientId}/timeline`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){ showDetailsMsg(data.message || 'Add failed', false); return; }
+
+    tlTitle.value=''; tlDesc.value='';
+    showDetailsMsg('Added');
+    await loadDetails();
+  });
+
+  rxAddBtn.addEventListener('click', async ()=>{
+    const medication = (rxMed.value||'').trim();
+    const dosage = (rxDose.value||'').trim();
+    const frequency = (rxFreq.value||'').trim();
+    if(!medication || !dosage || !frequency){
+      showDetailsMsg('Medication/Dosage/Frequency are required', false);
+      return;
+    }
+
+    const payload = {
+      medication, dosage, frequency,
+      startDate: rxStart.value || undefined,
+      endDate: rxEnd.value || undefined,
+      prescribedBy: (rxBy.value||'').trim(),
+      instructions: (rxInst.value||'').trim()
+    };
+
+    const res = await fetch(`${API}/api/patients/${detailsPatientId}/prescriptions`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){ showDetailsMsg(data.message || 'Add failed', false); return; }
+
+    rxMed.value=''; rxDose.value=''; rxFreq.value='';
+    rxStart.value=''; rxEnd.value=''; rxBy.value=''; rxInst.value='';
+    showDetailsMsg('Added');
+    await loadDetails();
+  });
+
+  ntAddBtn.addEventListener('click', async ()=>{
+    const text = (ntText.value||'').trim();
+    if(!text){ showDetailsMsg('Note text is required', false); return; }
+
+    const payload = { text, createdBy: (ntBy.value||'').trim() };
+
+    const res = await fetch(`${API}/api/patients/${detailsPatientId}/notes`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(()=>({}));
+    if(!res.ok){ showDetailsMsg(data.message || 'Add failed', false); return; }
+
+    ntText.value='';
+    showDetailsMsg('Added');
+    await loadDetails();
+  });
+
+  // init
+  (async ()=>{
+    await loadMeta();
+    await loadPatients();
+  })();
+</script>
+</body>
+</html>
