@@ -88,11 +88,11 @@ This is a **hospital rehabilitation system** with three integrated components:
 - **Rotary Encoder**: Speed adjustment
 
 ### Key Files
-- [BipedRobot.ino](BipedRobot/BipedRobot.ino) - Walking Controller: servo control, balance, UART receive
-- [ServoController.h](BipedRobot/ServoController.h) - PCA9685 servo abstraction
-- [Kinematics.h](BipedRobot/Kinematics.h) - Leg inverse kinematics
-- [config.h](BipedRobot/config.h) - Servo limits, PID gains, pin definitions
-- [BipedUserManager.ino](BipedUserManager/BipedUserManager.ino) - User Manager: RFID, OLED, WiFi, buttons
+- `BipedRobot/BipedRobot.ino` - Walking Controller: servo control, balance, UART receive
+- `BipedRobot/ServoController.h` - PCA9685 servo abstraction
+- `BipedRobot/Kinematics.h` - Leg inverse kinematics
+- `BipedRobot/config.h` - Servo limits, PID gains, pin definitions
+- `BipedUserManager/` - User Manager: RFID, OLED, WiFi, buttons (source files in src/)
 
 ### Balance System (Kalman Filter + PD Control)
 The balance system runs at 50Hz and uses sensor fusion:
@@ -201,8 +201,8 @@ POST /api/biped/location                # Report checkpoint location
 ## Carry Robot Firmware (`Carry_robot/`)
 
 ### Key Patterns
-- **State Machine** ([StateMachine.h](Carry_robot/src/StateMachine.h)): `STATE_IDLE_AT_MED` → `STATE_WAIT_CARGO` → `STATE_RUN_OUTBOUND` → `STATE_WAIT_AT_DEST` → `STATE_RUN_RETURN`
-- **Config-driven**: All pins, constants, and NFC UIDs defined in [config.h](Carry_robot/src/config.h)
+- **State Machine**: `STATE_IDLE_AT_MED` → `STATE_WAIT_CARGO` → `STATE_RUN_OUTBOUND` → `STATE_WAIT_AT_DEST` → `STATE_RUN_RETURN`
+- **Config-driven**: All pins, constants, and NFC UIDs defined in config.h
 - **Modular components**: Each feature isolated (`MecanumDrive`, `GyroTurn`, `NFCReader`, `ObstacleDetector`, `FollowMode`)
 - **Robot modes**: `MODE_AUTO` (NFC navigation), `MODE_MANUAL` (RF remote), `MODE_FOLLOW` (AprilTag tracking via ESP32-CAM)
 
@@ -287,7 +287,7 @@ cd Frontend && npm run dev   # Port 5173 (proxies /api to backend)
 ## Common Tasks
 
 ### Adding a New NFC Checkpoint
-1. Add entry to `CHECKPOINT_TABLE[]` in [config.h](Carry_robot/src/config.h)
+1. Add entry to `CHECKPOINT_TABLE[]` in `config.h` (Carry_robot/src/config.h)
 2. Update `MapGraph` in MongoDB via seed script or API
 
 ### Adding New Carry Robot Feature
@@ -296,12 +296,12 @@ cd Frontend && npm run dev   # Port 5173 (proxies /api to backend)
 3. Integrate with `StateMachine` if affects mission flow
 
 ### Adding New Biped Servo/Gait
-1. Update servo indices in [config.h](BipedRobot/config.h)
-2. Modify [Kinematics.h](BipedRobot/Kinematics.h) for leg position calculations
-3. Tune PID gains in config.h for balance
+1. Update servo indices in `BipedRobot/config.h`
+2. Modify `BipedRobot/Kinematics.h` for leg position calculations
+3. Tune PID gains in `config.h` for balance
 
 ### Modifying Mission Routes
-Routes are computed in [missions.js](Hospital%20Dashboard/Backend/src/routes/missions.js) using `buildAdj()` for graph traversal. Hard-coded routes exist for the 4-room hospital layout.
+Routes are computed in `missions.js` (`Hospital Dashboard/Backend/src/routes/missions.js`) using `buildAdj()` for graph traversal. Hard-coded routes exist for the 4-room hospital layout.
 
 ## Critical Notes
 

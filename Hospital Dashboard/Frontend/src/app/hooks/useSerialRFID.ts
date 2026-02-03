@@ -1,5 +1,42 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 
+// Web Serial API type declarations
+declare global {
+  interface Navigator {
+    serial: Serial;
+  }
+
+  interface Serial {
+    requestPort(options?: SerialPortRequestOptions): Promise<SerialPort>;
+    getPorts(): Promise<SerialPort[]>;
+  }
+
+  interface SerialPortRequestOptions {
+    filters?: SerialPortFilter[];
+  }
+
+  interface SerialPortFilter {
+    usbVendorId?: number;
+    usbProductId?: number;
+  }
+
+  interface SerialPort {
+    readable: ReadableStream<Uint8Array> | null;
+    writable: WritableStream<Uint8Array> | null;
+    open(options: SerialOptions): Promise<void>;
+    close(): Promise<void>;
+  }
+
+  interface SerialOptions {
+    baudRate: number;
+    dataBits?: number;
+    stopBits?: number;
+    parity?: 'none' | 'even' | 'odd';
+    bufferSize?: number;
+    flowControl?: 'none' | 'hardware';
+  }
+}
+
 export interface UseSerialRFIDOptions {
   baudRate?: number;
   onCardRead?: (uid: string) => void;
@@ -87,7 +124,8 @@ export function useSerialRFID(options: UseSerialRFIDOptions = {}): UseSerialRFID
     if (!portRef.current || !portRef.current.readable) return;
 
     const textDecoder = new TextDecoderStream();
-    const readableStreamClosed = portRef.current.readable.pipeTo(textDecoder.writable);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const readableStreamClosed = portRef.current.readable.pipeTo(textDecoder.writable as unknown as WritableStream<Uint8Array>);
     readerRef.current = textDecoder.readable.getReader();
     
     isReadingRef.current = true;
