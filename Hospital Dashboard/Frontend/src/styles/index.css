@@ -1,0 +1,130 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* Global font size increase */
+html {
+  font-size: 20px;
+}
+
+body {
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+/* Make all text slightly larger */
+p, span, div, td, th, label, input, select, textarea, button {
+  font-size: inherit;
+}
+
+/* Patient list table font size */
+.patient-list-table td,
+.patient-list-table th {
+  font-size: 23px;
+}
+
+/* Patient form larger font size */
+.patient-form-dialog label,
+.patient-form-dialog input,
+.patient-form-dialog select,
+.patient-form-dialog textarea,
+.patient-form-dialog button,
+.patient-form-dialog p,
+.patient-form-dialog span,
+.patient-form-dialog h1,
+.patient-form-dialog h2,
+.patient-form-dialog h3,
+.patient-form-dialog h4 {
+  font-size: 30px !important;
+}
+
+.patient-form-dialog input,
+.patient-form-dialog select {
+  height: 50px !important;
+}
+
+/* React DatePicker - Larger calendar */
+.react-datepicker {
+  font-size: 1.1rem !important;
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15) !important;
+}
+
+.react-datepicker-popper {
+  z-index: 9999 !important;
+}
+
+.react-datepicker-popper[data-placement^="bottom"] {
+  margin-top: 4px !important;
+}
+
+.react-datepicker-popper[data-placement^="top"] {
+  margin-bottom: 4px !important;
+}
+
+/* Align calendar to the right edge of input */
+.react-datepicker__triangle {
+  display: none !important;
+}
+
+.react-datepicker__header {
+  background-color: #f8fafc !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding: 12px 0 !important;
+}
+
+.react-datepicker__current-month {
+  font-size: 1.2rem !important;
+  font-weight: 600 !important;
+  color: #1e293b !important;
+  margin-bottom: 8px !important;
+}
+
+.react-datepicker__day-names {
+  margin-top: 8px !important;
+}
+
+.react-datepicker__day-name {
+  width: 2.5rem !important;
+  line-height: 2.5rem !important;
+  font-size: 0.95rem !important;
+  color: #64748b !important;
+  font-weight: 500 !important;
+}
+
+.react-datepicker__day {
+  width: 2.5rem !important;
+  line-height: 2.5rem !important;
+  font-size: 1rem !important;
+  border-radius: 6px !important;
+  margin: 2px !important;
+}
+
+.react-datepicker__day:hover {
+  background-color: #e2e8f0 !important;
+}
+
+.react-datepicker__day--selected {
+  background-color: #3b82f6 !important;
+  color: white !important;
+}
+
+.react-datepicker__day--today {
+  font-weight: 700 !important;
+  color: #3b82f6 !important;
+}
+
+.react-datepicker__day--today.react-datepicker__day--selected {
+  color: white !important;
+}
+
+.react-datepicker__navigation {
+  top: 12px !important;
+}
+
+.react-datepicker__navigation-icon::before {
+  border-width: 2px 2px 0 0 !important;
+  height: 10px !important;
+  width: 10px !important;
+}
