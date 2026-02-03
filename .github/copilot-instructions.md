@@ -1,4 +1,4 @@
-# Hospital Robot System - AI Coding Instructions
+# Hospital Robot System
 
 ## System Overview
 
