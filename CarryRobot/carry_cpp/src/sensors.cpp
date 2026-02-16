@@ -25,7 +25,8 @@ bool readNFC(uint8_t* uid, uint8_t* uidLen) {
 // TOF FUNCTIONS
 // =========================================
 void tofInit() {
-  if (!tof.begin()) {
+  tof.setTimeout(500);
+  if (!tof.init()) {
     Serial.println("VL53L0X fail");
   } else {
     tof.setMeasurementTimingBudget(20000);
@@ -34,10 +35,8 @@ void tofInit() {
 }
 
 bool tofReadDistance(uint16_t &dist) {
-  VL53L0X_RangingMeasurementData_t m;
-  tof.rangingTest(&m, false);
-  if (m.RangeStatus != 4) {
-    dist = m.RangeMilliMeter;
+  dist = tof.readRangeSingleMillimeters();
+  if (!tof.timeoutOccurred()) {
     return true;
   }
   return false;

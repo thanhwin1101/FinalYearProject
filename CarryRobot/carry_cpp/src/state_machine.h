@@ -7,14 +7,13 @@
 // STATE MACHINE FUNCTIONS
 // =========================================
 void startOutbound();
-void enterWaitCargo();
 void enterWaitAtDest();
-void startReturn();
-void enterIdle();
+void startReturn(const char* note, bool doUturn);
+void goIdleReset();
 
 // =========================================
 // CHECKPOINT HANDLER
 // =========================================
-void handleCheckpointHit(const char* nodeName);
+void handleCheckpointHit(const String& uid);
 
 #endif

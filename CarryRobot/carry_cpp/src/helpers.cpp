@@ -51,6 +51,10 @@ bool cargoHeld() {
   return cargoStable == LOW; 
 }
 
+bool isCargoLoaded() {
+  return cargoHeld();
+}
+
 // =========================================
 // NFC TIMING
 // =========================================
@@ -62,19 +66,26 @@ bool nfcAllowed() {
   return millis() >= nfcIgnoreUntil; 
 }
 
-// =========================================
-// TURN OVERLAY
-// =========================================
-void showTurnOverlay(char a, unsigned long ms) {
-  lastTurnChar = a;
-  turnOverlayUntil = millis() + ms;
+bool isNfcReady() {
+  return nfcAllowed();
+}
+
+void markNfcRead() {
+  ignoreNfcFor(400);  // Default ignore after read
 }
 
 // =========================================
 // BUZZER
 // =========================================
+#define BUZZER_PWM_CHANNEL 2
+
 void buzzerInit() {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   ledcAttach((uint8_t)BUZZER_PIN, 2000, 8);
+#else
+  ledcSetup(BUZZER_PWM_CHANNEL, 2000, 8);
+  ledcAttachPin(BUZZER_PIN, BUZZER_PWM_CHANNEL);
+#endif
   ledcWriteTone((uint8_t)BUZZER_PIN, 0);
 }
 

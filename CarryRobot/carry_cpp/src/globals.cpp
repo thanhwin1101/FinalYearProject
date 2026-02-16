@@ -10,11 +10,35 @@ bool tofOk = false;
 U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 Preferences prefs;
 
+// MQTT Objects
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
+// =========================================
+// MQTT CONFIGURATION
+// =========================================
+char mqttServer[64] = MQTT_DEFAULT_SERVER;
+int mqttPort = MQTT_DEFAULT_PORT;
+char mqttUser[32] = MQTT_DEFAULT_USER;
+char mqttPass[32] = MQTT_DEFAULT_PASS;
+bool mqttConnected = false;
+unsigned long lastMqttReconnect = 0;
+
+// Topic buffers
+char topicTelemetry[64];
+char topicMissionAssign[64];
+char topicMissionProgress[64];
+char topicMissionComplete[64];
+char topicMissionReturned[64];
+char topicMissionCancel[64];
+char topicMissionReturnRoute[64];
+char topicPositionWaitingReturn[64];
+char topicCommand[64];
+
 // =========================================
 // GLOBAL STATE VARIABLES (definitions)
 // =========================================
 static const char* PREF_NS = "carrycfg";
-char apiBase[96] = "http://192.168.1.63:3000";
 bool shouldSaveConfig = false;
 
 unsigned long lastTelemetry = 0;
@@ -49,3 +73,8 @@ bool destUturnedBeforeWait = false;
 unsigned long nfcIgnoreUntil = 0;
 char lastTurnChar = 'F';
 unsigned long turnOverlayUntil = 0;
+
+// Position tracking for cancel/return
+String cancelAtNodeId = "";
+bool waitingForReturnRoute = false;
+unsigned long waitingReturnRouteStartTime = 0;

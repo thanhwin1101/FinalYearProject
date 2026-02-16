@@ -6,172 +6,192 @@
 #include "communication.h"
 #include "route_logic.h"
 #include "helpers.h"
+#include "uid_lookup.h"
+#include <ctype.h>
+#include <algorithm>
 
 // =========================================
 // STATE TRANSITIONS
 // =========================================
 void startOutbound() {
-  robotState = STATE_RUN_OUTBOUND;
-  outboundIdx = 0;
-  visitedLen = 0;
-  
+  state = RUN_OUTBOUND;
+  routeIndex = 0;
+  obstacleHold = false;
+  ignoreNfcFor(600);
+  cancelPending = false;
+  destUturnedBeforeWait = false;
+
 #if SERIAL_DEBUG
   Serial.println("STATE -> RUN_OUTBOUND");
-  Serial.print("Route length: "); Serial.println(outboundLen);
+  Serial.print("Route length: "); Serial.println(outbound.size());
 #endif
-  
-  if (outboundLen > 0) {
-    drawRouteProgress("OUT", 0, outboundLen, outboundRoute[0].node);
-  }
   
   driveForward(PWM_FWD);
 }
 
-void enterWaitCargo() {
-  robotState = STATE_WAIT_CARGO;
-  motorsStop();
-  
-#if SERIAL_DEBUG
-  Serial.println("STATE -> WAIT_CARGO");
-#endif
-  
-  drawWaitingCargo(currentMissionId, missionDestBed);
-  updateMissionProgress(currentMissionId, "MED", "waiting_cargo", 10);
-}
-
 void enterWaitAtDest() {
-  robotState = STATE_WAIT_AT_DEST;
+  state = WAIT_AT_DEST;
   motorsStop();
   
 #if SERIAL_DEBUG
   Serial.println("STATE -> WAIT_AT_DEST");
 #endif
   
-  drawCentered("ARRIVED", missionDestBed, "Waiting for", "cargo unload");
-  updateMissionProgress(currentMissionId, missionDestBed, "at_destination", 70);
+  beepArrivedPattern();
 }
 
-void startReturn() {
-  robotState = STATE_RUN_RETURN;
+void startReturn(const char* note, bool doUturn) {
+  if (retRoute.size() < 2 && outbound.size() >= 2) {
+    retRoute = outbound;
+    std::reverse(retRoute.begin(), retRoute.end());
+  }
   
-  buildReturnFromVisited(visitedNodes, visitedLen, returnRoute, returnLen);
-  returnIdx = 0;
+  state = RUN_RETURN;
+  routeIndex = 0;
+  obstacleHold = false;
+  
+  if (doUturn && !destUturnedBeforeWait) {
+    turnByAction('B');
+    ignoreNfcFor(900);
+  }
   
 #if SERIAL_DEBUG
   Serial.println("STATE -> RUN_RETURN");
-  Serial.print("Return route length: "); Serial.println(returnLen);
+  Serial.print("Note: "); Serial.println(note ? note : "none");
+  Serial.print("Return route length: "); Serial.println(retRoute.size());
 #endif
-  
-  if (returnLen > 0) {
-    turnByAction(returnRoute[0].action);
-    drawRouteProgress("RET", 0, returnLen, returnRoute[0].node);
-  }
   
   driveForward(PWM_FWD);
 }
 
-void enterIdle() {
-  robotState = STATE_IDLE_AT_MED;
+void goIdleReset() {
+  state = IDLE_AT_MED;
   motorsStop();
   
-  currentMissionId[0] = '\0';
-  missionDestBed[0] = '\0';
-  clearRoute(outboundRoute, outboundLen);
-  clearRoute(returnRoute, returnLen);
-  visitedLen = 0;
+  activeMissionId = "";
+  activeMissionStatus = "";
+  patientName = "";
+  bedId = "";
+  outbound.clear();
+  retRoute.clear();
+  routeIndex = 0;
+  cancelPending = false;
+  destUturnedBeforeWait = false;
   
 #if SERIAL_DEBUG
   Serial.println("STATE -> IDLE_AT_MED");
 #endif
-  
-  drawCentered("IDLE", "At MED station", "Waiting for", "mission...");
-  
-  completeMission(currentMissionId);
-  buzzOK();
 }
 
 // =========================================
 // CHECKPOINT HANDLER
 // =========================================
-void handleCheckpointHit(const char* nodeName) {
-  strncpy(lastVisitedNode, nodeName, MAX_NODE_LEN - 1);
-  lastVisitedNode[MAX_NODE_LEN - 1] = '\0';
-  
+void handleCheckpointHit(const String& uid) {
+  // Home checkpoint (MED)
+  if (uid == HOME_MED_UID) {
+    haveSeenMED = true;
+    if (state == RUN_RETURN) {
+      sendReturned(activeMissionStatus == "cancelled" ? "returned_after_cancel" : "returned_ok");
+      goIdleReset();
+      beepOnce(200, 2400);
+      return;
+    }
+    if (state == IDLE_AT_MED) {
+      beepOnce(60, 2000);
+      return;
+    }
+  }
+
+  // Find node by UID
+  String nodeName = uidLookupByUid(uid);
+  if (nodeName.length() == 0) {
 #if SERIAL_DEBUG
-  Serial.print("Checkpoint: "); Serial.println(nodeName);
+    Serial.print("Unknown UID: "); Serial.println(uid);
 #endif
+    return;
+  }
+
+#if SERIAL_DEBUG
+  Serial.print("Checkpoint: "); Serial.print(nodeName);
+  Serial.print(" (UID: "); Serial.print(uid); Serial.println(")");
+#endif
+
+  const auto& route = currentRoute();
+  if (route.size() < 2) return;
+
+  String expectedUid = expectedNextUid();
+  if (expectedUid.length() == 0 || uid != expectedUid) {
+#if SERIAL_DEBUG
+    Serial.print("UID mismatch. Expected: "); Serial.println(expectedUid);
+#endif
+    return;
+  }
+
+  // Checkpoint matched - stop and process
+  applyForwardBrake();
+  routeIndex++;
   
-  switch (robotState) {
-    case STATE_RUN_OUTBOUND: {
-      if (outboundIdx < outboundLen) {
-        const char* expected = expectedNextUid(outboundRoute, outboundLen, outboundIdx);
-        
-        if (expected && strcmp(nodeName, expected) == 0) {
-          // Store visited node
-          if (visitedLen < MAX_ROUTE_LEN) {
-            strncpy(visitedNodes[visitedLen], nodeName, MAX_NODE_LEN - 1);
-            visitedNodes[visitedLen][MAX_NODE_LEN - 1] = '\0';
-            visitedLen++;
-          }
-          
-          char action = outboundRoute[outboundIdx].action;
-          outboundIdx++;
-          
-          // Check if reached destination
-          if (outboundIdx >= outboundLen) {
-            applyForwardBrake(PWM_BRAKE, BRAKE_FORWARD_MS);
-            enterWaitAtDest();
-            return;
-          }
-          
-          // Apply forward brake before turn
-          if (action == 'L' || action == 'R' || action == 'B') {
-            applyForwardBrake(PWM_BRAKE, BRAKE_FORWARD_MS);
-            turnByAction(action);
-          }
-          
-          int progress = (outboundIdx * 50) / outboundLen;
-          updateMissionProgress(currentMissionId, nodeName, "in_transit", progress);
-          drawRouteProgress("OUT", outboundIdx, outboundLen, outboundRoute[outboundIdx].node);
-          
-          driveForward(PWM_FWD);
-        }
-      }
-      break;
-    }
+  if (state == RUN_OUTBOUND) {
+    sendProgress("en_route", route[routeIndex].nodeId, "phase:outbound");
+  } else {
+    const char* st = (activeMissionStatus == "cancelled") ? "cancelled" : "completed";
+    sendProgress(st, route[routeIndex].nodeId, "phase:return");
+  }
+  beepOnce(60, 2200);
+
+  // Handle cancel during outbound
+  if (state == RUN_OUTBOUND && cancelPending) {
+    cancelPending = false;
+    activeMissionStatus = "cancelled";
     
-    case STATE_RUN_RETURN: {
-      if (returnIdx < returnLen) {
-        const char* expected = expectedNextUid(returnRoute, returnLen, returnIdx);
-        
-        if (expected && strcmp(nodeName, expected) == 0) {
-          char action = returnRoute[returnIdx].action;
-          returnIdx++;
-          
-          // Check if returned to MED
-          if (returnIdx >= returnLen || strcmp(nodeName, "MED") == 0 || strcmp(nodeName, "H_MED") == 0) {
-            applyForwardBrake(PWM_BRAKE, BRAKE_FORWARD_MS);
-            enterIdle();
-            return;
-          }
-          
-          // Apply forward brake before turn
-          if (action == 'L' || action == 'R' || action == 'B') {
-            applyForwardBrake(PWM_BRAKE, BRAKE_FORWARD_MS);
-            turnByAction(action);
-          }
-          
-          int progress = 70 + (returnIdx * 30) / returnLen;
-          updateMissionProgress(currentMissionId, nodeName, "returning", progress);
-          drawRouteProgress("RET", returnIdx, returnLen, returnRoute[returnIdx].node);
-          
-          driveForward(PWM_FWD);
-        }
-      }
-      break;
-    }
+    // Do U-turn first
+    applyForwardBrake();
+    turnByAction('B');
+    ignoreNfcFor(900);
     
-    default:
-      break;
+    // Get current node ID
+    String currentNode = route[routeIndex].nodeId;
+    cancelAtNodeId = currentNode;
+    
+    // Send position to Backend and wait for return route
+    sendPositionWaitingReturn(currentNode);
+    waitingForReturnRoute = true;
+    waitingReturnRouteStartTime = millis();
+    state = WAIT_FOR_RETURN_ROUTE;
+    
+#if SERIAL_DEBUG
+    Serial.print("Cancel at checkpoint: "); Serial.println(currentNode);
+    Serial.println("Waiting for return route from Backend...");
+#endif
+    beepOnce(160, 1500);
+    return;
+  }
+
+  // Handle turns
+  char a = (char)toupper((int)route[routeIndex].action);
+  if (a == 'L' || a == 'R') {
+    showTurnOverlay(a, 1500);
+    beepOnce(60, 2000);
+    turnByAction(a);
+    ignoreNfcFor(700);
+  }
+
+  // Check if reached destination (outbound)
+  if (state == RUN_OUTBOUND && routeIndex >= (int)outbound.size() - 1) {
+    applyForwardBrake();
+    toneOff();
+    turnByAction('B');  // U-Turn
+    destUturnedBeforeWait = true;
+    ignoreNfcFor(900);
+    enterWaitAtDest();
+    return;
+  }
+
+  // Check if returned to MED
+  if (state == RUN_RETURN && routeIndex >= (int)retRoute.size() - 1) {
+    sendReturned(activeMissionStatus == "cancelled" ? "returned_after_cancel" : "returned_ok");
+    goIdleReset();
+    beepOnce(200, 2400);
+    return;
   }
 }

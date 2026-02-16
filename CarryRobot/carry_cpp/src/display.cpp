@@ -86,3 +86,29 @@ void drawError(const char* errTitle, const char* errDetail) {
   }
   oled.sendBuffer();
 }
+
+void drawWaitingForReturnRoute() {
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_6x12_tr);
+  oled.drawStr(0, 12, "CANCELLED");
+  oled.drawStr(0, 28, "Waiting for");
+  oled.drawStr(0, 44, "return route...");
+  oled.sendBuffer();
+}
+
+void showTurnOverlay(char direction, unsigned long durationMs) {
+  const char* turnText = "TURN";
+  const char* dirText = (direction == 'L') ? "LEFT" : 
+                        (direction == 'R') ? "RIGHT" : "UTURN";
+  
+  oled.clearBuffer();
+  oled.setFont(u8g2_font_10x20_tr);
+  oled.drawStr(30, 30, turnText);
+  oled.drawStr(25, 55, dirText);
+  oled.sendBuffer();
+  
+  // Brief display, non-blocking for short durations
+  if (durationMs > 0 && durationMs <= 100) {
+    delay(durationMs);
+  }
+}

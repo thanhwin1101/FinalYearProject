@@ -40,13 +40,19 @@
 
 // --- SENSORS & UI ---
 #define CARGO_SWITCH_PIN 15
+#define CARGO_BTN        15    // Alias
 #define BUZZER_PIN       2
+
+// --- SPI for PN532 (aliases) ---
+#define SPI_SCK   PN532_SCK
+#define SPI_MISO  PN532_MISO
+#define SPI_MOSI  PN532_MOSI
+#define NFC_SS    PN532_SS
 
 // =========================================
 // 2. CONFIGURATION
 // =========================================
-static const char* ROBOT_ID      = "CARRY-01";
-static const char* HOME_MED_UID  = "45:54:80:83";
+static const char* ROBOT_ID = "CARRY-01";
 
 // Tắt Serial Debug để dùng chân TX/RX cho SRF05
 #define SERIAL_DEBUG 0 
@@ -56,6 +62,28 @@ static const int WIFI_PORTAL_TIMEOUT_S  = 180;
 static const int WIFI_CONNECT_TIMEOUT_S = 25;
 static const unsigned long CFG_RESET_HOLD_MS = 5000;
 
+// =========================================
+// MQTT CONFIGURATION
+// =========================================
+#define MQTT_DEFAULT_SERVER "192.168.0.102"
+#define MQTT_DEFAULT_PORT   1883
+#define MQTT_DEFAULT_USER   "hospital_robot"
+#define MQTT_DEFAULT_PASS   "123456"
+
+// MQTT Topics (format strings)
+#define TOPIC_TELEMETRY              "hospital/robots/%s/telemetry"
+#define TOPIC_MISSION_ASSIGN         "hospital/robots/%s/mission/assign"
+#define TOPIC_MISSION_PROGRESS       "hospital/robots/%s/mission/progress"
+#define TOPIC_MISSION_COMPLETE       "hospital/robots/%s/mission/complete"
+#define TOPIC_MISSION_RETURNED       "hospital/robots/%s/mission/returned"
+#define TOPIC_MISSION_CANCEL         "hospital/robots/%s/mission/cancel"
+#define TOPIC_MISSION_RETURN_ROUTE   "hospital/robots/%s/mission/return_route"
+#define TOPIC_POSITION_WAITING_RETURN "hospital/robots/%s/position/waiting_return"
+#define TOPIC_COMMAND                "hospital/robots/%s/command"
+
+// MQTT reconnect timing
+const unsigned long MQTT_RECONNECT_MS = 5000;
+
 // Motor Inversion (tuned)
 const bool INVERT_LEFT  = true;
 const bool INVERT_RIGHT = true;
@@ -64,6 +92,9 @@ const bool INVERT_RIGHT = true;
 const int PWM_FWD   = 165;
 const int PWM_TURN  = 168;
 const int PWM_BRAKE = 150;
+
+// Braking
+const int BRAKE_FORWARD_MS = 80;
 
 // Time-based Turn Config (tuned values)
 const unsigned long TURN_90_MS  = 974;
@@ -87,15 +118,22 @@ const int MOTOR_PWM_RES  = 8;
 const int OBSTACLE_MM             = 220;
 const int OBSTACLE_RESUME_MM      = 300;
 const int OBSTACLE_BEEP_PERIOD_MS = 600;
+const int TOF_STOP_DIST           = OBSTACLE_MM;
+const int TOF_RESUME_DIST         = OBSTACLE_RESUME_MM;
+const unsigned long TOF_INTERVAL  = 50;
 
 // Timing
-const unsigned long TELEMETRY_MS    = 2000;
-const unsigned long POLL_MS         = 1500;
-const unsigned long CANCEL_POLL_MS  = 2500;
-const unsigned long OLED_MS         = 200;
-const unsigned long WEB_OK_SHOW_MS  = 3000;
-const unsigned long WEB_OK_ALIVE_MS = 10000;
-const unsigned long SWITCH_DEBOUNCE_MS = 60;
+const unsigned long TELEMETRY_MS        = 2000;
+const unsigned long TELEMETRY_INTERVAL  = TELEMETRY_MS;
+const unsigned long POLL_MS             = 1500;
+const unsigned long CANCEL_POLL_MS      = 2500;
+const unsigned long OLED_MS             = 200;
+const unsigned long WEB_OK_SHOW_MS      = 3000;
+const unsigned long WEB_OK_ALIVE_MS     = 10000;
+const unsigned long SWITCH_DEBOUNCE_MS  = 60;
 const unsigned long NFC_REPEAT_GUARD_MS = 700;
+
+// Return route waiting timeout (5 seconds)
+const unsigned long RETURN_ROUTE_TIMEOUT_MS = 5000;
 
 #endif // CONFIG_H

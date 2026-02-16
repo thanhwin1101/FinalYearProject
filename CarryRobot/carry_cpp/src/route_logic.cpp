@@ -1,40 +1,73 @@
 #include "route_logic.h"
+#include "config.h"
+#include <algorithm>
+#include <ctype.h>
 
 // =========================================
 // ROUTE FUNCTIONS
 // =========================================
-void clearRoute(RouteStep* route, int& len) {
-  for (int i = 0; i < MAX_ROUTE_LEN; i++) {
-    route[i].node[0] = '\0';
-    route[i].action = '\0';
+
+const std::vector<RoutePoint>& currentRoute() {
+  return (state == RUN_RETURN) ? retRoute : outbound;
+}
+
+String expectedNextUid() {
+  const auto& r = currentRoute();
+  if (routeIndex + 1 >= (int)r.size()) return "";
+  return r[routeIndex + 1].rfidUid;
+}
+
+String currentNodeIdSafe() {
+  const auto& r = currentRoute();
+  if (routeIndex >= 0 && routeIndex < (int)r.size()) return r[routeIndex].nodeId;
+  return "";
+}
+
+char upcomingTurnAtNextNode() {
+  const auto& r = currentRoute();
+  int idx = routeIndex + 1;
+  if (idx >= 0 && idx < (int)r.size()) {
+    char a = r[idx].action;
+    a = (char)toupper((int)a);
+    if (a == 'L' || a == 'R') return a;
   }
-  len = 0;
+  return 'F';
 }
 
-const char* expectedNextUid(RouteStep* route, int routeLen, int idx) {
-  if (idx < 0 || idx >= routeLen) return nullptr;
-  return route[idx].node;
+const char* turnCharLabel(char a) {
+  if (a == 'L') return "L";
+  if (a == 'R') return "R";
+  if (a == 'B') return "B";
+  return "-";
 }
 
-static char invertAction(char a) {
+char invertTurn(char a) {
+  a = (char)toupper((int)a);
   if (a == 'L') return 'R';
   if (a == 'R') return 'L';
-  return a;
+  return 'F';
 }
 
-void buildReturnFromVisited(const char visited[][MAX_NODE_LEN], int visitedLen, RouteStep* ret, int& retLen) {
-  retLen = 0;
-  if (visitedLen < 2) return;
+void buildReturnFromVisited() {
+  if (outbound.size() < 2) return;
+  if (routeIndex < 0) return;
+  if (routeIndex >= (int)outbound.size()) routeIndex = (int)outbound.size() - 1;
+
+  std::vector<RoutePoint> visited(outbound.begin(), outbound.begin() + (routeIndex + 1));
+  std::reverse(visited.begin(), visited.end());
   
-  for (int i = visitedLen - 1; i >= 0 && retLen < MAX_ROUTE_LEN; i--) {
-    strncpy(ret[retLen].node, visited[i], MAX_NODE_LEN - 1);
-    ret[retLen].node[MAX_NODE_LEN - 1] = '\0';
-    
-    if (retLen == 0) {
-      ret[retLen].action = 'B';
-    } else {
-      ret[retLen].action = 'F';
+  auto findOutAction = [&](const String& nodeId) -> char {
+    for (const auto& p : outbound) {
+      if (p.nodeId == nodeId) return p.action;
     }
-    retLen++;
+    return 'F';
+  };
+
+  for (auto& p : visited) {
+    char oa = findOutAction(p.nodeId);
+    p.action = invertTurn(oa);
   }
+
+  if (!visited.empty()) visited[0].action = 'F';
+  retRoute.swap(visited);
 }

@@ -12,6 +12,8 @@ void drawState(const char* stateName, const char* info = nullptr);
 void drawRouteProgress(const char* phase, int idx, int total, const char* node);
 void drawMissionInfo(const char* missionId, const char* dest, const char* status);
 void drawWaitingCargo(const char* missionId, const char* dest);
+void drawWaitingForReturnRoute();
 void drawError(const char* errTitle, const char* errDetail);
+void showTurnOverlay(char direction, unsigned long durationMs);
 
 #endif

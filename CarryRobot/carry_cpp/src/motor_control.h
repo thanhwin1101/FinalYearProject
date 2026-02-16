@@ -2,6 +2,7 @@
 #define MOTOR_CONTROL_H
 
 #include <Arduino.h>
+#include "config.h"
 
 // Initialization
 void motorPwmInit();
@@ -15,9 +16,9 @@ void driveBackward(int pwm);
 void setMotorDirLeft();
 void setMotorDirRight();
 
-// Braking
-void applyForwardBrake(int brakePwm, int brakeMs);
-void applyHardBrake(bool wasTurningLeft, int brakePwm, int brakeMs);
+// Braking (with defaults)
+void applyForwardBrake(int brakePwm = PWM_BRAKE, int brakeMs = BRAKE_FORWARD_MS);
+void applyHardBrake(bool wasTurningLeft, int brakePwm = PWM_BRAKE, int brakeMs = 50);
 
 // Turning
 void rotateByTime(unsigned long totalMs, bool isLeft);

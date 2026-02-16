@@ -2,11 +2,13 @@
 // CARRY ROBOT - MAIN
 // Hospital Transport Robot Firmware
 // ESP32 + PN532 NFC + VL53L0X + SH1106 OLED
+// MQTT Version
 // =========================================
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <algorithm>
 
 #include "config.h"
 #include "globals.h"
@@ -20,41 +22,34 @@
 #include "helpers.h"
 
 // =========================================
-// TIMING VARIABLES
+// TIMING VARIABLES (local to main.cpp)
 // =========================================
-unsigned long lastNfcRead = 0;
-unsigned long lastTofRead = 0;
-unsigned long lastTelemetry = 0;
-unsigned long lastMissionPoll = 0;
-unsigned long waitStartTime = 0;
+static unsigned long lastNfcRead = 0;
+static unsigned long lastTofRead = 0;
+static unsigned long localLastTelemetry = 0;
 
 // =========================================
 // OBSTACLE DETECTION
 // =========================================
-bool obstacleDetected = false;
-uint16_t currentDistance = 9999;
-
 void checkObstacle() {
   if (millis() - lastTofRead >= TOF_INTERVAL) {
     lastTofRead = millis();
     
     uint16_t dist;
     if (tofReadDistance(dist)) {
-      currentDistance = dist;
-      
-      if (dist < TOF_STOP_DIST && !obstacleDetected) {
-        obstacleDetected = true;
+      if (dist < TOF_STOP_DIST && !obstacleHold) {
+        obstacleHold = true;
         motorsStop();
 #if SERIAL_DEBUG
         Serial.print("Obstacle! dist="); Serial.println(dist);
 #endif
-      } else if (dist >= TOF_RESUME_DIST && obstacleDetected) {
-        obstacleDetected = false;
+      } else if (dist >= TOF_RESUME_DIST && obstacleHold) {
+        obstacleHold = false;
 #if SERIAL_DEBUG
         Serial.println("Obstacle cleared");
 #endif
         // Resume movement if in transit
-        if (robotState == STATE_RUN_OUTBOUND || robotState == STATE_RUN_RETURN) {
+        if (state == RUN_OUTBOUND || state == RUN_RETURN) {
           driveForward(PWM_FWD);
         }
       }
@@ -66,30 +61,28 @@ void checkObstacle() {
 // NFC CHECKPOINT PROCESSING
 // =========================================
 void processNFC() {
-  if (obstacleDetected) return;
+  if (obstacleHold) return;
   if (!isNfcReady()) return;
   
   uint8_t uid[7];
   uint8_t uidLen = 0;
   
   if (readNFC(uid, &uidLen)) {
-    const char* nodeName = uidLookupByNodeId(uid, uidLen);
+    markNfcRead();
     
-    if (nodeName) {
-      markNfcRead();
-      applyForwardBrake(PWM_BRAKE, BRAKE_FORWARD_MS);  // Active brake on checkpoint
-      handleCheckpointHit(nodeName);
+    // Convert UID to hex string
+    String uidStr = "";
+    for (int i = 0; i < uidLen; i++) {
+      if (uid[i] < 0x10) uidStr += "0";
+      uidStr += String(uid[i], HEX);
     }
+    uidStr.toUpperCase();
+    
 #if SERIAL_DEBUG
-    else {
-      Serial.print("Unknown UID: ");
-      for (int i = 0; i < uidLen; i++) {
-        Serial.print(uid[i], HEX);
-        Serial.print(" ");
-      }
-      Serial.println();
-    }
+    Serial.print("NFC UID: "); Serial.println(uidStr);
 #endif
+    
+    handleCheckpointHit(uidStr);
   }
 }
 
@@ -97,41 +90,34 @@ void processNFC() {
 // CARGO BUTTON CHECK
 // =========================================
 void checkCargoButton() {
-  if (robotState == STATE_WAIT_CARGO) {
+  if (state == WAIT_AT_DEST) {
     if (isCargoLoaded()) {
       delay(50);  // Debounce
       if (isCargoLoaded()) {
-        buzzOK();
-        startOutbound();
-      }
-    }
-  } else if (robotState == STATE_WAIT_AT_DEST) {
-    if (isCargoLoaded()) {
-      delay(50);
-      if (isCargoLoaded()) {
-        buzzOK();
-        startReturn();
+        beepOnce(120, 2200);
+        startReturn("button_confirm", true);
       }
     }
   }
 }
 
 // =========================================
-// MISSION POLLING
+// WAIT FOR RETURN ROUTE TIMEOUT
 // =========================================
-void pollMission() {
-  if (robotState != STATE_IDLE_AT_MED) return;
-  if (millis() - lastMissionPoll < MISSION_POLL_INTERVAL) return;
-  
-  lastMissionPoll = millis();
-  
-  if (fetchNextMission()) {
+void checkReturnRouteTimeout() {
+  if (state == WAIT_FOR_RETURN_ROUTE && waitingForReturnRoute) {
+    if (millis() - waitingReturnRouteStartTime > RETURN_ROUTE_TIMEOUT_MS) {
 #if SERIAL_DEBUG
-    Serial.print("New mission: "); Serial.println(currentMissionId);
-    Serial.print("Destination: "); Serial.println(missionDestBed);
+      Serial.println("Return route timeout - building from visited");
 #endif
-    buzzOK();
-    enterWaitCargo();
+      waitingForReturnRoute = false;
+      
+      // Fallback: reverse outbound route
+      retRoute = outbound;
+      std::reverse(retRoute.begin(), retRoute.end());
+      
+      startReturn("timeout_fallback", false);
+    }
   }
 }
 
@@ -139,8 +125,8 @@ void pollMission() {
 // TELEMETRY
 // =========================================
 void sendPeriodicTelemetry() {
-  if (millis() - lastTelemetry < TELEMETRY_INTERVAL) return;
-  lastTelemetry = millis();
+  if (millis() - localLastTelemetry < TELEMETRY_INTERVAL) return;
+  localLastTelemetry = millis();
   
   sendTelemetry();
 }
@@ -174,21 +160,6 @@ void initPins() {
 }
 
 // =========================================
-// LOAD SAVED CONFIG
-// =========================================
-void loadConfig() {
-  prefs.begin("carry", true);  // Read-only
-  String savedUrl = prefs.getString("apibase", DEFAULT_API_BASE);
-  strncpy(apiBaseUrl, savedUrl.c_str(), sizeof(apiBaseUrl) - 1);
-  apiBaseUrl[sizeof(apiBaseUrl) - 1] = '\0';
-  prefs.end();
-  
-#if SERIAL_DEBUG
-  Serial.print("Loaded API Base: "); Serial.println(apiBaseUrl);
-#endif
-}
-
-// =========================================
 // SETUP
 // =========================================
 void setup() {
@@ -196,7 +167,7 @@ void setup() {
   delay(100);
   
 #if SERIAL_DEBUG
-  Serial.println("\n=== CARRY ROBOT STARTING ===");
+  Serial.println("\n=== CARRY ROBOT STARTING (MQTT) ===");
 #endif
   
   // Initialize hardware
@@ -208,21 +179,18 @@ void setup() {
   displayInit();
   drawCentered("CARRY ROBOT", "Starting...", "", "");
   
-  // Load config
-  loadConfig();
-  
   // Sensors
   nfcInit();
   tofInit();
   
-  // WiFi
-  drawCentered("CARRY ROBOT", "Connecting", "WiFi...", "");
-  wifiInit();
+  // WiFi + MQTT
+  drawCentered("CARRY ROBOT", "Connecting", "WiFi + MQTT", "");
+  mqttInit();
   
   // Initial state
-  enterIdle();
+  goIdleReset();
   
-  buzzOK();
+  beepOnce(120, 2200);
   
 #if SERIAL_DEBUG
   Serial.println("=== READY ===");
@@ -233,6 +201,9 @@ void setup() {
 // MAIN LOOP
 // =========================================
 void loop() {
+  // MQTT processing
+  mqttLoop();
+  
   // Check obstacle (highest priority)
   checkObstacle();
   
@@ -242,8 +213,8 @@ void loop() {
   // Check cargo button
   checkCargoButton();
   
-  // Poll for new missions
-  pollMission();
+  // Check return route timeout
+  checkReturnRouteTimeout();
   
   // Send telemetry
   sendPeriodicTelemetry();

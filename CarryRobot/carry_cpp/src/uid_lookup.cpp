@@ -58,8 +58,24 @@ static const struct { uint8_t uid[7]; uint8_t len; const char* node; } UID_MAP[]
   // Room 1 doors
   { { 0x04, 0xF6, 0x18, 0xD2, 0x06, 0x00, 0x00 }, 7, "R1D1" },
   { { 0x04, 0xEE, 0x18, 0xD2, 0x06, 0x00, 0x00 }, 7, "R1D2" },
+  // MED station
+  { { 0x53, 0x78, 0xCF, 0x0F },                   4, "MED" },
 };
 static const int UID_MAP_SIZE = sizeof(UID_MAP) / sizeof(UID_MAP[0]);
+
+// HOME_MED_UID constant (H_MED or MED)
+const String HOME_MED_UID = "04381AD2060000";
+
+// Convert UID bytes to hex string
+static String uidBytesToHex(const uint8_t* uid, uint8_t len) {
+  String s = "";
+  for (int i = 0; i < len; i++) {
+    if (uid[i] < 0x10) s += "0";
+    s += String(uid[i], HEX);
+  }
+  s.toUpperCase();
+  return s;
+}
 
 const char* uidLookupByNodeId(const uint8_t* uid, uint8_t len) {
   for (int i = 0; i < UID_MAP_SIZE; i++) {
@@ -68,4 +84,26 @@ const char* uidLookupByNodeId(const uint8_t* uid, uint8_t len) {
     }
   }
   return nullptr;
+}
+
+String uidLookupByUid(const String& uidHex) {
+  String uidUpper = uidHex;
+  uidUpper.toUpperCase();
+  
+  for (int i = 0; i < UID_MAP_SIZE; i++) {
+    String mapUid = uidBytesToHex(UID_MAP[i].uid, UID_MAP[i].len);
+    if (mapUid == uidUpper) {
+      return String(UID_MAP[i].node);
+    }
+  }
+  return "";
+}
+
+String getUidForNode(const String& nodeName) {
+  for (int i = 0; i < UID_MAP_SIZE; i++) {
+    if (nodeName.equalsIgnoreCase(UID_MAP[i].node)) {
+      return uidBytesToHex(UID_MAP[i].uid, UID_MAP[i].len);
+    }
+  }
+  return "";
 }

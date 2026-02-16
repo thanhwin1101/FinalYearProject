@@ -16,13 +16,13 @@ String truncStr(const String& s, size_t maxLen);
 // Cargo switch
 void updateCargoSwitch();
 bool cargoHeld();
+bool isCargoLoaded();  // Alias for cargoHeld
 
 // NFC timing
 void ignoreNfcFor(unsigned long ms);
 bool nfcAllowed();
-
-// Turn overlay
-void showTurnOverlay(char a, unsigned long ms = 1500);
+bool isNfcReady();     // Alias for nfcAllowed
+void markNfcRead();    // Set default ignore time after read
 
 // Buzzer
 void buzzerInit();

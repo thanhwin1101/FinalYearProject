@@ -27,9 +27,21 @@ static inline int applyGainDuty(int pwm, float gain) {
 // =========================================
 // INITIALIZATION
 // =========================================
+
+// PWM channels
+#define PWM_CHANNEL_LEFT  0
+#define PWM_CHANNEL_RIGHT 1
+
 void motorPwmInit() {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   ledcAttach((uint8_t)EN_LEFT, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
   ledcAttach((uint8_t)EN_RIGHT, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+#else
+  ledcSetup(PWM_CHANNEL_LEFT, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+  ledcSetup(PWM_CHANNEL_RIGHT, MOTOR_PWM_FREQ, MOTOR_PWM_RES);
+  ledcAttachPin(EN_LEFT, PWM_CHANNEL_LEFT);
+  ledcAttachPin(EN_RIGHT, PWM_CHANNEL_RIGHT);
+#endif
   ledcWrite((uint8_t)EN_LEFT, 0);
   ledcWrite((uint8_t)EN_RIGHT, 0);
 }
