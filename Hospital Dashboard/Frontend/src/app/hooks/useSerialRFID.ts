@@ -96,25 +96,48 @@ export function useSerialRFID(options: UseSerialRFIDOptions = {}): UseSerialRFID
     updateStatus('error');
   }, [onError, updateStatus]);
 
+  // Store onCardRead in ref to avoid stale closure
+  const onCardReadRef = useRef(onCardRead);
+  useEffect(() => {
+    onCardReadRef.current = onCardRead;
+  }, [onCardRead]);
+
   // Parse incoming serial data
   const parseSerialData = useCallback((data: string) => {
     const lines = data.split('\n');
     
+    console.log('[RFID] Received raw data:', JSON.stringify(data));
+    
     for (const line of lines) {
       const trimmed = line.trim();
+      if (!trimmed) continue;
       
+      console.log('[RFID] Processing line:', JSON.stringify(trimmed));
+      
+      // Handle format with prefix: "RFID:XXXXXXXX"
       if (trimmed.startsWith('RFID:')) {
         const uid = trimmed.substring(5);
         if (uid.length >= 8) {  // Valid UID should be at least 8 hex chars
+          console.log('[RFID] Card detected (with prefix):', uid);
           setLastUID(uid);
-          onCardRead?.(uid);
+          onCardReadRef.current?.(uid);
         }
-      } else if (trimmed === 'RFID_READY') {
+      } 
+      // Handle raw UID format (uppercase hex only, 8+ chars)
+      else if (/^[0-9A-Fa-f]{8,}$/.test(trimmed)) {
+        const uid = trimmed.toUpperCase();
+        console.log('[RFID] Card detected (raw hex):', uid);
+        setLastUID(uid);
+        onCardReadRef.current?.(uid);
+      }
+      else if (trimmed === 'RFID_READY') {
         console.log('[RFID] Device ready');
       } else if (trimmed === 'PONG') {
         console.log('[RFID] Device responded to ping');
       } else if (trimmed.startsWith('ERROR:')) {
         handleError(trimmed.substring(6));
+      } else if (trimmed.startsWith('MFRC522_VERSION:')) {
+        console.log('[RFID] Module version:', trimmed.substring(16));
       }
     }
   }, [onCardRead, handleError]);

@@ -39,8 +39,7 @@
 #define ECHO_RIGHT 35
 
 // --- SENSORS & UI ---
-#define CARGO_SWITCH_PIN 15
-#define CARGO_BTN        15    // Alias
+#define SW_PIN           15
 #define BUZZER_PIN       2
 
 // --- SPI for PN532 (aliases) ---
@@ -52,7 +51,8 @@
 // =========================================
 // 2. CONFIGURATION
 // =========================================
-static const char* ROBOT_ID = "CARRY-01";
+static const char* ROBOT_ID     = "CARRY-01";
+static const char* DEVICE_NAME  = "Carry-01";
 
 // Tắt Serial Debug để dùng chân TX/RX cho SRF05
 #define SERIAL_DEBUG 0 
@@ -60,7 +60,6 @@ static const char* ROBOT_ID = "CARRY-01";
 // WiFiManager
 static const int WIFI_PORTAL_TIMEOUT_S  = 180;
 static const int WIFI_CONNECT_TIMEOUT_S = 25;
-static const unsigned long CFG_RESET_HOLD_MS = 5000;
 
 // =========================================
 // MQTT CONFIGURATION
@@ -128,8 +127,6 @@ const unsigned long TELEMETRY_INTERVAL  = TELEMETRY_MS;
 const unsigned long POLL_MS             = 1500;
 const unsigned long CANCEL_POLL_MS      = 2500;
 const unsigned long OLED_MS             = 200;
-const unsigned long WEB_OK_SHOW_MS      = 3000;
-const unsigned long WEB_OK_ALIVE_MS     = 10000;
 const unsigned long SWITCH_DEBOUNCE_MS  = 60;
 const unsigned long NFC_REPEAT_GUARD_MS = 700;
 

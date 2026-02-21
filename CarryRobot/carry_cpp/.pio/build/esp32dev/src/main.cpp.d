@@ -208,6 +208,5 @@
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiUdp.h \
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
- .pio/libdeps/esp32dev/PubSubClient/src/PubSubClient.h \
- src/motor_control.h src/sensors.h src/uid_lookup.h src/route_logic.h \
- src/display.h src/communication.h src/state_machine.h src/helpers.h
+ .pio/libdeps/esp32dev/PubSubClient/src/PubSubClient.h src/hardware.h \
+ src/mission.h

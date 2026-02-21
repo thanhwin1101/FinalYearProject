@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useForm } from 'react-hook-form';
-import { X, Save, RotateCcw, Sparkles, CalendarIcon, Usb, Radio, Loader2 } from 'lucide-react';
-import { useSerialRFID } from '@/app/hooks/useSerialRFID';
+import { X, Save, RotateCcw, Sparkles, CalendarIcon, Radio } from 'lucide-react';
+import { useRFIDContext } from '@/app/contexts/RFIDContext';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { Button } from '@/app/components/ui/button';
@@ -16,8 +16,9 @@ import { generateMRN } from '@/app/utils/patient-helpers';
 interface PatientFormProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (patient: Patient) => void;
+  onSave: (patient: Patient, photoFile?: File) => void;
   editingPatient?: Patient | null;
+  existingPatients?: Patient[]; // For duplicate card check
 }
 
 interface FormData {
@@ -35,82 +36,102 @@ interface FormData {
   relativePhone: string;
 }
 
-export function PatientForm({ isOpen, onClose, onSave, editingPatient }: PatientFormProps) {
-  const [photo, setPhoto] = useState<string>('');
+// Helper function to convert base64 to File
+function base64ToFile(base64: string, filename: string): File {
+  const arr = base64.split(',');
+  const mimeMatch = arr[0].match(/:(.*?);/);
+  const mime = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const bstr = atob(arr[1]);
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) {
+    u8arr[n] = bstr.charCodeAt(n);
+  }
+  return new File([u8arr], filename, { type: mime });
+}
+
+export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingPatients = [] }: PatientFormProps) {
+  const [photo, setPhoto] = useState<string>(''); // base64 for preview
+  const [photoFile, setPhotoFile] = useState<File | null>(null); // File for upload
   const [selectedBedId, setSelectedBedId] = useState<string>('');
+  const [duplicateCardError, setDuplicateCardError] = useState<string>('');
   const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormData>();
 
   const mrnValue = watch('mrn');
+  const cardNumberValue = watch('cardNumber');
 
-  // RFID Reader integration via Web Serial API
-  const handleCardRead = useCallback((uid: string) => {
-    setValue('cardNumber', uid);
-  }, [setValue]);
+  // RFID Reader integration via global context
+  const { status: rfidStatus, isSupported: rfidSupported, onCardRead } = useRFIDContext();
 
-  const {
-    status: rfidStatus,
-    isSupported: rfidSupported,
-    connect: connectRFID,
-    disconnect: disconnectRFID,
-    error: rfidError
-  } = useSerialRFID({
-    onCardRead: handleCardRead
-  });
-
-  const handleRFIDConnection = async () => {
-    if (rfidStatus === 'connected') {
-      await disconnectRFID();
-    } else {
-      await connectRFID();
+  // Check for duplicate card number
+  const checkDuplicateCard = useCallback((uid: string) => {
+    const duplicate = existingPatients.find(
+      p => p.cardNumber?.toUpperCase() === uid.toUpperCase() && p.id !== editingPatient?.id
+    );
+    if (duplicate) {
+      setDuplicateCardError(`⚠️ This card is already assigned to patient: ${duplicate.fullName} (${duplicate.mrn})`);
+      return true;
     }
-  };
+    setDuplicateCardError('');
+    return false;
+  }, [existingPatients, editingPatient]);
 
-  // Auto-connect to RFID reader when form opens
+  // Subscribe to card read events when form is open
   useEffect(() => {
-    if (isOpen && rfidSupported && rfidStatus === 'disconnected') {
-      connectRFID();
+    if (isOpen) {
+      console.log('[PatientForm] Subscribing to RFID events');
+      const unsubscribe = onCardRead((uid: string) => {
+        console.log('[PatientForm] Received UID:', uid);
+        setValue('cardNumber', uid, { shouldValidate: true });
+        checkDuplicateCard(uid);
+      });
+      return () => {
+        console.log('[PatientForm] Unsubscribing from RFID events');
+        unsubscribe();
+      };
     }
-    // Disconnect when form closes
-    if (!isOpen && rfidStatus === 'connected') {
-      disconnectRFID();
-    }
-  }, [isOpen, rfidSupported, rfidStatus, connectRFID, disconnectRFID]);
+  }, [isOpen, onCardRead, setValue, checkDuplicateCard]);
 
+  // Load form data when editing or opening
   useEffect(() => {
-    if (editingPatient) {
-      reset({
-        fullName: editingPatient.fullName,
-        mrn: editingPatient.mrn,
-        cardNumber: editingPatient.cardNumber,
-        admissionDate: editingPatient.admissionDate,
-        status: editingPatient.status,
-        primaryDoctor: editingPatient.primaryDoctor,
-        department: editingPatient.department,
-        ward: editingPatient.ward,
-        roomBedId: editingPatient.roomBedId,
-        insurancePolicyId: editingPatient.insurancePolicyId || '',
-        relativeName: editingPatient.relativeName,
-        relativePhone: editingPatient.relativePhone
-      });
-      setPhoto(editingPatient.photo || '');
-      setSelectedBedId(editingPatient.roomBedId || '');
-    } else {
-      reset({
-        fullName: '',
-        mrn: '',
-        cardNumber: '',
-        admissionDate: new Date().toISOString().split('T')[0],
-        status: 'Stable',
-        primaryDoctor: '',
-        department: '',
-        ward: '',
-        roomBedId: '',
-        insurancePolicyId: '',
-        relativeName: '',
-        relativePhone: ''
-      });
-      setPhoto('');
-      setSelectedBedId('');
+    if (isOpen) {
+      if (editingPatient) {
+        // Edit mode: load existing patient data
+        reset({
+          fullName: editingPatient.fullName,
+          mrn: editingPatient.mrn,
+          cardNumber: editingPatient.cardNumber,
+          admissionDate: editingPatient.admissionDate,
+          status: editingPatient.status,
+          primaryDoctor: editingPatient.primaryDoctor,
+          department: editingPatient.department,
+          ward: editingPatient.ward,
+          roomBedId: editingPatient.roomBedId,
+          insurancePolicyId: editingPatient.insurancePolicyId || '',
+          relativeName: editingPatient.relativeName,
+          relativePhone: editingPatient.relativePhone
+        });
+        setPhoto(editingPatient.photo || '');
+        setSelectedBedId(editingPatient.roomBedId || '');
+      } else {
+        // New patient mode: clear form
+        reset({
+          fullName: '',
+          mrn: '',
+          cardNumber: '',
+          admissionDate: new Date().toISOString().split('T')[0],
+          status: 'Stable',
+          primaryDoctor: '',
+          department: '',
+          ward: '',
+          roomBedId: '',
+          insurancePolicyId: '',
+          relativeName: '',
+          relativePhone: ''
+        });
+        setPhoto('');
+        setSelectedBedId('');
+      }
     }
   }, [editingPatient, reset, isOpen]);
 
@@ -119,6 +140,11 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient }: Patient
   };
 
   const onSubmit = (data: FormData) => {
+    // Check for duplicate before saving
+    if (duplicateCardError) {
+      return; // Don't save if duplicate card
+    }
+    
     const patient: Patient = {
       id: editingPatient?.id || crypto.randomUUID(),
       ...data,
@@ -131,7 +157,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient }: Patient
       createdAt: editingPatient?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    onSave(patient);
+    onSave(patient, photoFile || undefined);
     handleReset();
     onClose();
   };
@@ -139,7 +165,9 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient }: Patient
   const handleReset = () => {
     reset();
     setPhoto('');
+    setPhotoFile(null);
     setSelectedBedId('');
+    setDuplicateCardError('');
   };
 
   const handleBedIdChange = (value: string) => {
@@ -160,7 +188,19 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient }: Patient
           {/* Biometric Integration */}
           <div className="space-y-3">
             <Label className="text-base font-semibold">Patient Photo (Biometric)</Label>
-            <CameraCapture onCapture={setPhoto} currentPhoto={photo} />
+            <CameraCapture 
+              onCapture={(base64) => {
+                setPhoto(base64);
+                // Convert base64 to File for upload
+                if (base64) {
+                  const file = base64ToFile(base64, `patient-photo-${Date.now()}.jpg`);
+                  setPhotoFile(file);
+                  console.log('[PatientForm] Photo captured, file size:', file.size);
+                } else {
+                  setPhotoFile(null);
+                }
+              }} 
+              currentPhoto={photo} />
           </div>
 
           {/* Patient Identification */}
@@ -204,40 +244,32 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient }: Patient
 
             <div className="space-y-3">
               <Label htmlFor="cardNumber" className="text-base font-medium">Card Number (RFID/UID) *</Label>
-              <div className="flex gap-3">
+              <div className="flex gap-3 items-center">
                 <Input
                   id="cardNumber"
                   {...register('cardNumber', { required: 'Card number is required' })}
-                  placeholder="Scan card or enter manually"
-                  className="flex-1 h-12 text-base"
+                  readOnly
+                  placeholder={rfidStatus === 'connected' ? '🔄 Place card on reader to scan...' : '⚠️ Waiting for RFID reader connection...'}
+                  className={`flex-1 h-12 text-base font-mono bg-gray-50 cursor-not-allowed ${rfidStatus === 'connected' ? 'border-green-300 focus:border-green-500' : 'border-orange-300'} ${duplicateCardError ? 'border-red-500' : ''}`}
                 />
-                {rfidSupported && (
-                  <Button
-                    type="button"
-                    variant={rfidStatus === 'connected' ? 'default' : 'outline'}
-                    onClick={handleRFIDConnection}
-                    className={`shrink-0 h-12 text-base px-4 ${rfidStatus === 'connected' ? 'bg-green-600 hover:bg-green-700' : ''}`}
-                    title={rfidStatus === 'connected' ? 'Click to disconnect RFID reader' : 'Click to connect RFID reader'}
-                  >
-                    {rfidStatus === 'connecting' ? (
-                      <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                    ) : rfidStatus === 'connected' ? (
-                      <Radio className="w-5 h-5 mr-2 animate-pulse" />
-                    ) : (
-                      <Usb className="w-5 h-5 mr-2" />
-                    )}
-                    {rfidStatus === 'connecting' ? 'Đang kết nối...' : rfidStatus === 'connected' ? 'Đang quét...' : 'Kết nối đầu đọc'}
-                  </Button>
+                {rfidStatus === 'connected' && (
+                  <div className="flex items-center gap-2 text-green-600">
+                    <Radio className="w-5 h-5 animate-pulse" />
+                    <span className="text-sm font-medium">Ready</span>
+                  </div>
                 )}
               </div>
-              {rfidStatus === 'connected' && (
-                <p className="text-sm text-green-600">✓ Đầu đọc RFID đã kết nối. Đặt thẻ lên đầu đọc để quét.</p>
+              {duplicateCardError && (
+                <p className="text-sm text-red-600 font-medium bg-red-50 p-2 rounded border border-red-200">{duplicateCardError}</p>
               )}
-              {rfidError && (
-                <p className="text-sm text-orange-600">⚠ {rfidError}</p>
+              {rfidStatus === 'connected' && !duplicateCardError && (
+                <p className="text-sm text-green-600">✓ RFID reader connected. Place card on reader to scan automatically.</p>
+              )}
+              {rfidStatus === 'disconnected' && rfidSupported && (
+                <p className="text-sm text-orange-500">⚠️ RFID reader not connected. Please reload page and click "Connect" in popup.</p>
               )}
               {!rfidSupported && (
-                <p className="text-xs text-gray-400 italic">* Web Serial API không được hỗ trợ. Vui lòng nhập thủ công hoặc dùng Chrome/Edge.</p>
+                <p className="text-xs text-red-500">❌ Browser does not support Web Serial API. Please use Chrome or Edge.</p>
               )}
               {errors.cardNumber && (
                 <p className="text-base text-red-600">{errors.cardNumber.message}</p>

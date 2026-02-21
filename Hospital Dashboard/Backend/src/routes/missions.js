@@ -6,6 +6,9 @@ import Robot from '../models/Robot.js';
 import TransportMission from '../models/TransportMission.js';
 import Alert from '../models/Alert.js';
 
+// MQTT Service for robot communication
+import { publishMissionAssign, publishMissionCancel } from '../services/mqttService.js';
+
 const router = express.Router();
 
 function makeId(prefix) {
@@ -414,6 +417,16 @@ router.post('/delivery', async (req, res) => {
       }
     );
 
+    // Publish mission to robot via MQTT
+    publishMissionAssign(carry.robotId, {
+      missionId,
+      status: 'pending',
+      patientName,
+      bedId: normalBedId,
+      outboundRoute,
+      returnRoute
+    });
+
     res.json({
       ok: true,
       missionId,
@@ -595,6 +608,9 @@ router.post('/carry/:missionId/cancel', async (req, res) => {
         }
       }
     );
+
+    // Publish cancel to robot via MQTT
+    publishMissionCancel(m.carryRobotId, missionId);
 
     res.json({ ok: true });
   } catch (e) {

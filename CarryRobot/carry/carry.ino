@@ -1,21 +1,7 @@
-/*
-  Carry Robot ESP32 FULL VERSION
-  Hardware: 
-  - ESP32 WROOM
-  - PN532 (VSPI: SCK=18, MISO=19, MOSI=23, SS=5)
-  - VL53L0X + MPU6050 + OLED SH1106 (I2C: SDA=21, SCL=22)
-  - Motor Driver L298N x2 (Left Side + Right Side)
-  - SRF05 x2 (Left + Right)
-  - Cargo Switch
 
-  Features:
-  - Gyro turns (90/180) with Hard Braking.
-  - Full Node Map.
-  - WiFiManager & REST API.
-*/
 
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <PubSubClient.h>  // MQTT library - cài qua Library Manager hoặc PlatformIO
 #include <ArduinoJson.h>
 
 #include <WiFiManager.h>
@@ -26,8 +12,6 @@
 
 #include <Wire.h>
 #include <VL53L0X.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 
 #include <U8g2lib.h>
 #include <vector>
@@ -90,23 +74,51 @@ static const int WIFI_PORTAL_TIMEOUT_S  = 180;
 static const int WIFI_CONNECT_TIMEOUT_S = 25;
 static const unsigned long CFG_RESET_HOLD_MS = 5000;
 
+// =========================================
+// MQTT CONFIGURATION
+// =========================================
+static char mqttServer[64] = "192.168.0.102";  // IP máy chạy Mosquitto
+static int  mqttPort = 1883;
+static char mqttUser[32] = "hospital_robot";
+static char mqttPass[32] = "123456";
+
+// MQTT Topics
+#define TOPIC_TELEMETRY    "hospital/robots/%s/telemetry"
+#define TOPIC_MISSION_ASSIGN  "hospital/robots/%s/mission/assign"
+#define TOPIC_MISSION_PROGRESS "hospital/robots/%s/mission/progress"
+#define TOPIC_MISSION_COMPLETE "hospital/robots/%s/mission/complete"
+#define TOPIC_MISSION_RETURNED "hospital/robots/%s/mission/returned"
+#define TOPIC_MISSION_CANCEL   "hospital/robots/%s/mission/cancel"
+#define TOPIC_MISSION_RETURN_ROUTE "hospital/robots/%s/mission/return_route"
+#define TOPIC_POSITION_WAITING_RETURN "hospital/robots/%s/position/waiting_return"
+#define TOPIC_COMMAND      "hospital/robots/%s/command"
+
+// MQTT reconnect timing
+const unsigned long MQTT_RECONNECT_MS = 5000;
+static unsigned long lastMqttReconnect = 0;
+
 // Motor Inversion (tuned)
 const bool INVERT_LEFT  = true;
 const bool INVERT_RIGHT = true;
 
 // Motion PWM (tuned: left=179, right=180, turn=179)
-const int PWM_FWD   = 180;      // Base speed (max of left/right)
-const int PWM_TURN  = 179;      // Tốc độ khi quay
+const int PWM_FWD   = 165;      // Base speed (max of left/right)
+const int PWM_TURN  = 168;      // Tốc độ khi quay
 const int PWM_BRAKE = 150;      // Lực phanh nghịch đảo
 
-// Gyro Config (tuned: target 90 = 90.0)
-const float TURN_90_TARGET  = 90.0;  // Target 90 degrees
-const float TURN_180_TARGET = 180.0; // Target 180 degrees
-const float GYRO_OFFSET_THRESHOLD = 2.0; // Bỏ qua nhiễu nhỏ
+// Time-based Turn Config (tuned values)
+const unsigned long TURN_90_MS  = 974;   // Thời gian quay 90 độ (ms)
+const unsigned long TURN_180_MS = 1980;  // ms for 180 degree turn (time-based)
+
+// Turn Speed Zones (giảm tốc dần)
+const int PWM_TURN_SLOW = 120;           // Tốc độ chậm khi gần đích
+const int PWM_TURN_FINE = 90;            // Tốc độ rất chậm cuối
+const float SLOW_ZONE_RATIO = 0.25;      // 25% cuối bắt đầu giảm tốc
+const float FINE_ZONE_RATIO = 0.10;      // 10% cuối rất chậm
 
 // Gain (Cân bằng động cơ khi chạy thẳng - tuned: 179/180)
-static float leftGain  = 0.9944f;  // 179/180
-static float rightGain = 1.00f;   
+static float leftGain  = 1.00f;  // 179/180
+static float rightGain = 1.011f;   
 
 // PWM Properties
 const int MOTOR_PWM_FREQ = 20000;
@@ -146,16 +158,29 @@ static inline void showTurnOverlay(char a, unsigned long ms = 1500) {
 Adafruit_PN532 nfc(PN532_SS); 
 VL53L0X tof;
 bool tofOk = false;
-Adafruit_MPU6050 mpu;
-bool mpuOk = false;
 U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 
+// MQTT Client
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+static bool mqttConnected = false;
+
 // =========================================
-// 4. API & STATE
+// 4. MQTT TOPICS & STATE
 // =========================================
 Preferences prefs;
 static const char* PREF_NS = "carrycfg";
-static char apiBase[96] = "http://192.168.1.121:3000";
+
+// Topic buffers (built at runtime with ROBOT_ID)
+static char topicTelemetry[64];
+static char topicMissionAssign[64];
+static char topicMissionProgress[64];
+static char topicMissionComplete[64];
+static char topicMissionReturned[64];
+static char topicMissionCancel[64];
+static char topicMissionReturnRoute[64];
+static char topicPositionWaitingReturn[64];
+static char topicCommand[64];
 
 static bool shouldSaveConfig = false;
 static void saveConfigCallback() { shouldSaveConfig = true; }
@@ -168,8 +193,12 @@ unsigned long lastOLED = 0;
 unsigned long lastWebOkAt = 0;
 unsigned long webOkUntil = 0;
 
-enum RunState { IDLE_AT_MED, RUN_OUTBOUND, WAIT_AT_DEST, RUN_RETURN };
+enum RunState { IDLE_AT_MED, RUN_OUTBOUND, WAIT_AT_DEST, RUN_RETURN, WAIT_FOR_RETURN_ROUTE };
 RunState state = IDLE_AT_MED;
+
+// Position tracking for cancel/return
+static String cancelAtNodeId = "";
+static bool waitingForReturnRoute = false;
 
 struct RoutePoint {
   String nodeId;
@@ -197,24 +226,24 @@ static unsigned long lastNfcAt = 0;
 static bool cancelPending = false;          
 static bool destUturnedBeforeWait = false;
 
+// Return route waiting timeout (5 seconds)
+static const unsigned long RETURN_ROUTE_TIMEOUT_MS = 5000;
+static unsigned long waitingReturnRouteStartTime = 0;
+
 // =========================================
 // 5. HELPER FUNCTIONS
 // =========================================
-static String joinUrl(const char* base, const String& path) {
-  String u(base);
-  if (u.endsWith("/")) u.remove(u.length() - 1);
-  if (!path.startsWith("/")) u += "/";
-  u += path;
-  return u;
-}
-
-static void markWebOk() {
+static void markMqttOk() {
   lastWebOkAt = millis();
   webOkUntil = lastWebOkAt + WEB_OK_SHOW_MS;
 }
 
+static bool mqttOk() {
+  return mqttConnected && mqttClient.connected();
+}
+
 static bool webConnected() {
-  return (lastWebOkAt > 0) && (millis() - lastWebOkAt <= WEB_OK_ALIVE_MS);
+  return mqttOk() && (lastWebOkAt > 0) && (millis() - lastWebOkAt <= WEB_OK_ALIVE_MS);
 }
 
 static String truncStr(const String& s, size_t maxLen) {
@@ -284,6 +313,23 @@ static void motorsStop() {
   digitalWrite(RR_IN1, LOW); digitalWrite(RR_IN2, LOW);
 }
 
+// --- FORWARD ACTIVE BRAKE ---
+// Phanh chủ động khi đang đi thẳng (đảo chiều motor để dừng nhanh)
+static void applyForwardBrake(int brakePwm = PWM_BRAKE, int brakeMs = 60) {
+  // Đảo chiều: đang tiến -> kích lùi để phanh
+  setSideSpeed(brakePwm, brakePwm);
+  
+  // Left Side Backward (respects INVERT_LEFT)
+  digitalWrite(FL_IN1, INVERT_LEFT ? HIGH : LOW);  digitalWrite(FL_IN2, INVERT_LEFT ? LOW : HIGH);
+  digitalWrite(RL_IN1, INVERT_LEFT ? HIGH : LOW);  digitalWrite(RL_IN2, INVERT_LEFT ? LOW : HIGH);
+  // Right Side Backward (respects INVERT_RIGHT)
+  digitalWrite(FR_IN1, INVERT_RIGHT ? HIGH : LOW); digitalWrite(FR_IN2, INVERT_RIGHT ? LOW : HIGH);
+  digitalWrite(RR_IN1, INVERT_RIGHT ? HIGH : LOW); digitalWrite(RR_IN2, INVERT_RIGHT ? LOW : HIGH);
+  
+  delay(brakeMs);
+  motorsStop();
+}
+
 // Hàm tính Gain cho chạy thẳng
 static inline int applyGainDuty(int pwm, float gain) {
   if (pwm <= 0) return 0;
@@ -342,7 +388,7 @@ static void setMotorDirRight() {
 }
 
 // --- HARD BRAKE LOGIC ---
-static void applyHardBrake(bool wasTurningLeft) {
+static void applyHardBrake(bool wasTurningLeft, int brakePwm = PWM_BRAKE, int brakeMs = 80) {
   // Đảo chiều motor trong thời gian ngắn để triệt tiêu quán tính
   if (wasTurningLeft) {
     // Vừa quay Trái -> Phanh bằng cách kích chiều Phải
@@ -352,61 +398,72 @@ static void applyHardBrake(bool wasTurningLeft) {
     setMotorDirLeft();
   }
   
-  setSideSpeed(PWM_BRAKE, PWM_BRAKE);
-  delay(100); // 100ms phanh
+  setSideSpeed(brakePwm, brakePwm);
+  delay(brakeMs);
   motorsStop();
 }
 
-// --- GYRO TURN LOGIC ---
-static void rotateWithGyro(float targetAngle, bool isLeft) {
-  if (!mpuOk) {
-    // Fallback: dùng delay nếu MPU lỗi
-    setSideSpeed(PWM_TURN, PWM_TURN);
-    if (isLeft) setMotorDirLeft(); else setMotorDirRight();
-    delay(targetAngle > 100 ? 1240 : 620); 
-    motorsStop();
-    return;
-  }
-
+// --- TIME-BASED TURN with Speed Zones & Active Braking ---
+static void rotateByTime(unsigned long totalMs, bool isLeft) {
   motorsStop();
-  delay(100); // Dừng hẳn trước khi đo
+  delay(50); // Dừng hẳn trước khi quay
 
-  float currentAngle = 0;
-  unsigned long lastTime = millis();
+  // Tính các mốc thời gian
+  unsigned long slowZoneStart = (unsigned long)(totalMs * (1.0 - SLOW_ZONE_RATIO));  // 75% tổng thời gian
+  unsigned long fineZoneStart = (unsigned long)(totalMs * (1.0 - FINE_ZONE_RATIO));  // 90% tổng thời gian
   
-  setSideSpeed(PWM_TURN, PWM_TURN);
+  // Set direction
   if (isLeft) setMotorDirLeft(); else setMotorDirRight();
+  
+  unsigned long startTime = millis();
+  int currentPwm = PWM_TURN;
+  setSideSpeed(currentPwm, currentPwm);
 
-  while (abs(currentAngle) < targetAngle) {
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+  while (true) {
+    unsigned long elapsed = millis() - startTime;
+    if (elapsed >= totalMs) break;
     
-    unsigned long now = millis();
-    float dt = (now - lastTime) / 1000.0;
-    lastTime = now;
-
-    // g.gyro.z tính bằng rad/s. Đổi sang deg/s.
-    float gyroZ = g.gyro.z * 57.2958; 
-
-    // Cộng dồn góc (tích phân)
-    if (abs(gyroZ) > GYRO_OFFSET_THRESHOLD) {
-      currentAngle += gyroZ * dt;
+    // Điều chỉnh tốc độ theo vùng thời gian
+    int newPwm;
+    if (elapsed >= fineZoneStart) {
+      newPwm = PWM_TURN_FINE;  // Rất chậm 10% cuối
+    } else if (elapsed >= slowZoneStart) {
+      // Giảm dần từ PWM_TURN_SLOW xuống PWM_TURN_FINE
+      float progress = (float)(elapsed - slowZoneStart) / (fineZoneStart - slowZoneStart);
+      newPwm = PWM_TURN_SLOW - (int)((PWM_TURN_SLOW - PWM_TURN_FINE) * progress);
+    } else {
+      newPwm = PWM_TURN;  // Tốc độ bình thường 75% đầu
     }
     
-    // Safety break loop
-    if (abs(currentAngle) > (targetAngle + 45)) break; 
+    // Chỉ update PWM khi thay đổi đáng kể
+    if (abs(newPwm - currentPwm) >= 8) {
+      currentPwm = newPwm;
+      setSideSpeed(currentPwm, currentPwm);
+    }
+    
+    delay(5); // ~200Hz loop rate
   }
 
-  // STOP & HARD BRAKE
+  // STOP
   motorsStop();
-  delay(10); // delay micro trước khi đảo chiều
-  applyHardBrake(isLeft);
+  delay(15);
+  
+  // Hard brake - nhẹ hơn nếu đã giảm tốc
+  int brakePwm = (currentPwm < PWM_TURN_SLOW) ? (PWM_BRAKE / 2) : PWM_BRAKE;
+  int brakeMs = (currentPwm < PWM_TURN_SLOW) ? 40 : 60;
+  applyHardBrake(isLeft, brakePwm, brakeMs);
+
+#if SERIAL_DEBUG
+  Serial.print("Turn "); Serial.print(isLeft ? "L" : "R");
+  Serial.print(" time="); Serial.print(totalMs);
+  Serial.println("ms");
+#endif
 }
 
 static void turnByAction(char a) {
-  if (a == 'L') rotateWithGyro(TURN_90_TARGET, true);
-  else if (a == 'R') rotateWithGyro(TURN_90_TARGET, false);
-  else if (a == 'B') rotateWithGyro(TURN_180_TARGET, true); // U-turn ưu tiên quay trái
+  if (a == 'L') rotateByTime(TURN_90_MS, true);
+  else if (a == 'R') rotateByTime(TURN_90_MS, false);
+  else if (a == 'B') rotateByTime(TURN_180_MS, true); // U-turn ưu tiên quay trái
 }
 
 // =========================================
@@ -575,7 +632,10 @@ static void oledDraw() {
   if (millis() < webOkUntil) {
     l1 = "WEB OK";
   } else {
-    const char* st = (state == IDLE_AT_MED) ? "IDLE" : (state == RUN_OUTBOUND) ? "OUT" : (state == WAIT_AT_DEST) ? "WAIT" : "BACK";
+    const char* st = (state == IDLE_AT_MED) ? "IDLE" : 
+                     (state == RUN_OUTBOUND) ? "OUT" : 
+                     (state == WAIT_AT_DEST) ? "WAIT" : 
+                     (state == WAIT_FOR_RETURN_ROUTE) ? "RTWT" : "BACK";
     l1 = String("WEB:") + (webConnected() ? "OK " : "-- ") + st;
   }
 
@@ -593,12 +653,17 @@ static void oledDraw() {
     if (activeMissionId.length() && haveSeenMED) {
       l4 = cargoHeld() ? "CARGO:OK -> GO" : "CARGO:LOAD...";
     } else {
-      l4 = String("API: ") + truncStr(String(apiBase), 14);
+      l4 = String("MQTT:") + truncStr(String(mqttServer), 13);
     }
   } else if (state == WAIT_AT_DEST) {
     l2 = String("BED: ") + truncStr(bedId, 16);
     l3 = String("PT: ") + truncStr(patientName, 16);
     l4 = cargoHeld() ? "WAIT UNLOAD..." : "UNLOADED -> BACK";
+  } else if (state == WAIT_FOR_RETURN_ROUTE) {
+    l2 = String("CANCELLED AT:");
+    l3 = truncStr(cancelAtNodeId, 16);
+    unsigned long elapsed = (millis() - waitingReturnRouteStartTime) / 1000;
+    l4 = String("WAIT ROUTE... ") + String(elapsed) + "s";
   } else {
     l2 = String("BED: ") + truncStr(bedId, 16);
     l3 = String("PT: ") + truncStr(patientName, 16);
@@ -618,37 +683,120 @@ static void oledDraw() {
 }
 
 // =========================================
-// 11. COMMUNICATION
+// 11. MQTT COMMUNICATION
 // =========================================
-static bool httpJson(const String& url, const char* method, const String& body, String& out, int& code) {
-  if (WiFi.status() != WL_CONNECTED) return false;
-  HTTPClient http;
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
 
-  if (strcmp(method, "GET") == 0) code = http.GET();
-  else if (strcmp(method, "POST") == 0) code = http.POST(body);
-  else if (strcmp(method, "PUT") == 0) code = http.PUT(body);
-  else { http.end(); return false; }
+// Forward declarations
+static void parseMissionPayload(const char* payload);
+static void parseCommandPayload(const char* payload);
+static void parseCancelPayload(const char* payload);
+static void parseReturnRoutePayload(const char* payload);
 
-  out = http.getString();
-  http.end();
+// MQTT Callback - Nhận message từ broker
+static void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Null-terminate payload
+  char* msg = (char*)malloc(length + 1);
+  if (!msg) return;
+  memcpy(msg, payload, length);
+  msg[length] = '\0';
 
-  if (code >= 200 && code < 300) markWebOk();
-  return true;
+#if SERIAL_DEBUG
+  Serial.print("MQTT Recv ["); Serial.print(topic); Serial.print("]: ");
+  Serial.println(msg);
+#endif
+
+  markMqttOk();
+
+  // Dispatch based on topic
+  if (strcmp(topic, topicMissionAssign) == 0) {
+    parseMissionPayload(msg);
+  } else if (strcmp(topic, topicMissionCancel) == 0) {
+    parseCancelPayload(msg);
+  } else if (strcmp(topic, topicMissionReturnRoute) == 0) {
+    parseReturnRoutePayload(msg);
+  } else if (strcmp(topic, topicCommand) == 0) {
+    parseCommandPayload(msg);
+  }
+
+  free(msg);
 }
 
-static void saveApiBase(const char* v) {
+static void buildTopics() {
+  snprintf(topicTelemetry, sizeof(topicTelemetry), TOPIC_TELEMETRY, ROBOT_ID);
+  snprintf(topicMissionAssign, sizeof(topicMissionAssign), TOPIC_MISSION_ASSIGN, ROBOT_ID);
+  snprintf(topicMissionProgress, sizeof(topicMissionProgress), TOPIC_MISSION_PROGRESS, ROBOT_ID);
+  snprintf(topicMissionComplete, sizeof(topicMissionComplete), TOPIC_MISSION_COMPLETE, ROBOT_ID);
+  snprintf(topicMissionReturned, sizeof(topicMissionReturned), TOPIC_MISSION_RETURNED, ROBOT_ID);
+  snprintf(topicMissionCancel, sizeof(topicMissionCancel), TOPIC_MISSION_CANCEL, ROBOT_ID);
+  snprintf(topicMissionReturnRoute, sizeof(topicMissionReturnRoute), TOPIC_MISSION_RETURN_ROUTE, ROBOT_ID);
+  snprintf(topicPositionWaitingReturn, sizeof(topicPositionWaitingReturn), TOPIC_POSITION_WAITING_RETURN, ROBOT_ID);
+  snprintf(topicCommand, sizeof(topicCommand), TOPIC_COMMAND, ROBOT_ID);
+}
+
+static void mqttReconnect() {
+  if (mqttClient.connected()) {
+    mqttConnected = true;
+    return;
+  }
+
+  unsigned long now = millis();
+  if (now - lastMqttReconnect < MQTT_RECONNECT_MS) return;
+  lastMqttReconnect = now;
+
+#if SERIAL_DEBUG
+  Serial.print("MQTT connecting to "); Serial.print(mqttServer);
+  Serial.print(":"); Serial.println(mqttPort);
+#endif
+
+  String clientId = String("CarryRobot-") + ROBOT_ID + "-" + String(random(0xffff), HEX);
+  
+  if (mqttClient.connect(clientId.c_str(), mqttUser, mqttPass)) {
+    mqttConnected = true;
+    markMqttOk();
+    
+    // Subscribe to relevant topics
+    mqttClient.subscribe(topicMissionAssign);
+    mqttClient.subscribe(topicMissionCancel);
+    mqttClient.subscribe(topicMissionReturnRoute);  // Backend sends return route
+    mqttClient.subscribe(topicCommand);
+    
+#if SERIAL_DEBUG
+    Serial.println("MQTT connected, subscribed to topics");
+#endif
+    beepOnce(60, 2400);
+  } else {
+    mqttConnected = false;
+#if SERIAL_DEBUG
+    Serial.print("MQTT failed, rc="); Serial.println(mqttClient.state());
+#endif
+  }
+}
+
+static void mqttPublish(const char* topic, const String& payload, bool retained = false) {
+  if (!mqttClient.connected()) return;
+  mqttClient.publish(topic, payload.c_str(), retained);
+  markMqttOk();
+}
+
+static void saveMqttConfig() {
   prefs.begin(PREF_NS, false);
-  prefs.putString("apiBase", String(v));
+  prefs.putString("mqttServer", String(mqttServer));
+  prefs.putInt("mqttPort", mqttPort);
+  prefs.putString("mqttUser", String(mqttUser));
+  prefs.putString("mqttPass", String(mqttPass));
   prefs.end();
 }
 
 static void loadConfig() {
   prefs.begin(PREF_NS, true);
-  String v = prefs.getString("apiBase", "");
+  String srv = prefs.getString("mqttServer", "");
+  if (srv.length() > 0) strlcpy(mqttServer, srv.c_str(), sizeof(mqttServer));
+  mqttPort = prefs.getInt("mqttPort", 1883);
+  String usr = prefs.getString("mqttUser", "");
+  if (usr.length() > 0) strlcpy(mqttUser, usr.c_str(), sizeof(mqttUser));
+  String pwd = prefs.getString("mqttPass", "");
+  if (pwd.length() > 0) strlcpy(mqttPass, pwd.c_str(), sizeof(mqttPass));
   prefs.end();
-  if (v.length() > 0) strlcpy(apiBase, v.c_str(), sizeof(apiBase));
 }
 
 static void clearConfig() {
@@ -657,48 +805,31 @@ static void clearConfig() {
   prefs.end();
 }
 
-static void sendTelemetry() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  StaticJsonDocument<256> doc;
-  doc["name"] = String("Carry ") + ROBOT_ID;
-  doc["type"] = "carry";
-  doc["batteryLevel"] = 100;
-  doc["firmwareVersion"] = "carry-ino-full-v2";
-  bool busy = (state != IDLE_AT_MED) || (activeMissionId.length() > 0);
-  doc["status"] = busy ? "busy" : "idle";
-  String body; serializeJson(doc, body);
-  String url = joinUrl(apiBase, String("/api/robots/") + ROBOT_ID + "/telemetry");
-  String resp; int code = 0;
-  httpJson(url, "PUT", body, resp, code);
-}
-
-static bool fetchMission() {
-  if (WiFi.status() != WL_CONNECTED) return false;
-  String url = joinUrl(apiBase, String("/api/missions/carry/next?robotId=") + ROBOT_ID);
-  String resp; int code = 0;
-  if (!httpJson(url, "GET", "", resp, code)) return false;
-  if (code != 200) return false;
-
+// Parse mission assignment from MQTT
+static void parseMissionPayload(const char* payload) {
   StaticJsonDocument<12288> doc;
-  if (deserializeJson(doc, resp)) return false;
+  if (deserializeJson(doc, payload)) return;
 
   JsonVariant m = doc["mission"];
-  if (m.isNull()) {
-    activeMissionId = ""; activeMissionStatus = "";
-    patientName = ""; bedId = "";
-    outbound.clear(); retRoute.clear(); routeIndex = 0;
-    cancelPending = false; destUturnedBeforeWait = false;
-    return false;
-  }
+  if (m.isNull()) m = doc.as<JsonVariant>(); // Mission might be root object
 
   String mid = m["missionId"] | "";
-  if (mid.length() == 0) return false;
+  if (mid.length() == 0) return;
+
+  // Ignore if we already have an active mission
+  if (activeMissionId.length() > 0 && activeMissionId != mid) {
+#if SERIAL_DEBUG
+    Serial.println("Ignoring mission - already have active mission");
+#endif
+    return;
+  }
+
   if (mid != activeMissionId) {
     routeIndex = 0; cancelPending = false; destUturnedBeforeWait = false;
   }
 
   activeMissionId = mid;
-  activeMissionStatus = String((const char*)(m["status"] | ""));
+  activeMissionStatus = String((const char*)(m["status"] | "pending"));
   patientName = String((const char*)(m["patientName"] | ""));
   bedId = String((const char*)(m["bedId"] | ""));
 
@@ -732,44 +863,193 @@ static bool fetchMission() {
     retRoute = outbound;
     std::reverse(retRoute.begin(), retRoute.end());
   }
-  return (outbound.size() >= 2);
+
+  beepOnce(100, 2000);
+#if SERIAL_DEBUG
+  Serial.print("Mission received: "); Serial.println(mid);
+  Serial.print("Bed: "); Serial.println(bedId);
+#endif
+}
+
+// Parse cancel command from MQTT
+static void parseCancelPayload(const char* payload) {
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, payload)) return;
+
+  String mid = doc["missionId"] | "";
+  if (mid.length() == 0 || mid != activeMissionId) return;
+
+  activeMissionStatus = "cancelled";
+  
+  if (state == RUN_OUTBOUND) {
+    cancelPending = true;
+    beepOnce(80, 1500);
+#if SERIAL_DEBUG
+    Serial.println("Cancel pending - will stop at next checkpoint");
+#endif
+  } else if (state == WAIT_AT_DEST) {
+    // Will be handled in main loop
+#if SERIAL_DEBUG
+    Serial.println("Cancel received at destination");
+#endif
+  }
+}
+
+// Parse command from MQTT (stop, resume, etc.)
+static void parseCommandPayload(const char* payload) {
+  StaticJsonDocument<256> doc;
+  if (deserializeJson(doc, payload)) return;
+
+  String cmd = doc["command"] | "";
+  if (cmd == "stop") {
+    motorsStop();
+    obstacleHold = true;
+    beepOnce(200, 1200);
+  } else if (cmd == "resume") {
+    obstacleHold = false;
+    beepOnce(60, 2400);
+  }
+}
+
+static void sendTelemetry() {
+  if (!mqttClient.connected()) return;
+  StaticJsonDocument<256> doc;
+  doc["robotId"] = ROBOT_ID;
+  doc["name"] = String("Carry ") + ROBOT_ID;
+  doc["type"] = "carry";
+  doc["batteryLevel"] = 100;
+  doc["firmwareVersion"] = "carry-mqtt-v1";
+  bool busy = (state != IDLE_AT_MED) || (activeMissionId.length() > 0);
+  doc["status"] = busy ? "busy" : "idle";
+  doc["mqttConnected"] = mqttConnected;
+  String payload; serializeJson(doc, payload);
+  mqttPublish(topicTelemetry, payload);
 }
 
 static void sendProgress(const char* statusTextOrNull, const String& nodeId, const char* note = nullptr) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (!mqttClient.connected()) return;
   if (activeMissionId.length() == 0) return;
   StaticJsonDocument<256> doc;
+  doc["missionId"] = activeMissionId;
   if (statusTextOrNull && statusTextOrNull[0]) doc["status"] = statusTextOrNull;
   doc["currentNodeId"] = nodeId;
   doc["batteryLevel"] = 100;
   if (note) doc["note"] = note;
-  String body; serializeJson(doc, body);
-  String url = joinUrl(apiBase, String("/api/missions/carry/") + activeMissionId + "/progress");
-  String resp; int code = 0;
-  httpJson(url, "PUT", body, resp, code);
+  String payload; serializeJson(doc, payload);
+  mqttPublish(topicMissionProgress, payload);
 }
 
 static void sendComplete(const char* result = "ok") {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (!mqttClient.connected()) return;
   if (activeMissionId.length() == 0) return;
   StaticJsonDocument<192> doc;
+  doc["missionId"] = activeMissionId;
   doc["result"] = result;
   doc["note"] = "delivered; switch released; start return";
-  String body; serializeJson(doc, body);
-  String url = joinUrl(apiBase, String("/api/missions/carry/") + activeMissionId + "/complete");
-  String resp; int code = 0;
-  httpJson(url, "POST", body, resp, code);
+  String payload; serializeJson(doc, payload);
+  mqttPublish(topicMissionComplete, payload);
 }
 
 static void sendReturned(const char* note = nullptr) {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (!mqttClient.connected()) return;
   if (activeMissionId.length() == 0) return;
   StaticJsonDocument<192> doc;
+  doc["missionId"] = activeMissionId;
   if (note) doc["note"] = note;
-  String body; serializeJson(doc, body);
-  String url = joinUrl(apiBase, String("/api/missions/carry/") + activeMissionId + "/returned");
-  String resp; int code = 0;
-  httpJson(url, "POST", body, resp, code);
+  String payload; serializeJson(doc, payload);
+  mqttPublish(topicMissionReturned, payload);
+}
+
+// Send current position to Backend and wait for return route
+static void sendPositionWaitingReturn(const String& currentNodeId) {
+  if (!mqttClient.connected()) return;
+  if (activeMissionId.length() == 0) return;
+  
+  StaticJsonDocument<192> doc;
+  doc["missionId"] = activeMissionId;
+  doc["currentNodeId"] = currentNodeId;
+  String payload; serializeJson(doc, payload);
+  mqttPublish(topicPositionWaitingReturn, payload);
+  
+#if SERIAL_DEBUG
+  Serial.print("Sent position waiting for return: "); Serial.println(currentNodeId);
+#endif
+}
+
+// Parse return route from Backend
+static void parseReturnRoutePayload(const char* payload) {
+  StaticJsonDocument<2048> doc;  // Larger for route array
+  if (deserializeJson(doc, payload)) {
+#if SERIAL_DEBUG
+    Serial.println("parseReturnRoutePayload: JSON parse error");
+#endif
+    return;
+  }
+
+  String mid = doc["missionId"] | "";
+  if (mid.length() == 0 || mid != activeMissionId) return;
+  
+  String status = doc["status"] | "";
+  if (status != "ok") {
+#if SERIAL_DEBUG
+    Serial.println("Return route status error - fallback to local");
+#endif
+    // Fallback: use local calculation
+    buildReturnFromVisited();
+    waitingForReturnRoute = false;
+    state = RUN_RETURN;
+    routeIndex = 0;
+    obstacleHold = false;
+    beepOnce(120, 1800);
+    return;
+  }
+
+  // Clear existing return route
+  retRoute.clear();
+  
+  // Parse return route array
+  JsonArray arr = doc["returnRoute"].as<JsonArray>();
+  if (arr.isNull() || arr.size() < 2) {
+#if SERIAL_DEBUG
+    Serial.println("Return route too short - fallback to local");
+#endif
+    buildReturnFromVisited();
+    waitingForReturnRoute = false;
+    state = RUN_RETURN;
+    routeIndex = 0;
+    obstacleHold = false;
+    beepOnce(120, 1800);
+    return;
+  }
+
+  for (JsonVariant v : arr) {
+    RoutePoint rp;
+    rp.nodeId = v["nodeId"] | "";
+    rp.rfidUid = v["rfidUid"] | "";
+    rp.x = v["x"] | 0.0f;
+    rp.y = v["y"] | 0.0f;
+    rp.action = (v["action"] | "F")[0];
+    if (rp.nodeId.length() > 0) {
+      retRoute.push_back(rp);
+    }
+  }
+
+#if SERIAL_DEBUG
+  Serial.print("Received return route from Backend: ");
+  Serial.print(retRoute.size()); Serial.println(" nodes");
+  for (int i = 0; i < (int)retRoute.size(); i++) {
+    Serial.print("  "); Serial.print(i); Serial.print(": ");
+    Serial.print(retRoute[i].nodeId); Serial.print(" act=");
+    Serial.println(retRoute[i].action);
+  }
+#endif
+
+  // Start return with Backend route
+  waitingForReturnRoute = false;
+  state = RUN_RETURN;
+  routeIndex = 0;
+  obstacleHold = false;
+  beepOnce(120, 2400);
 }
 
 // =========================================
@@ -833,8 +1113,20 @@ static void setupWiFiManager(bool forceReset) {
   WiFiManager wm;
   wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
   wm.setConnectTimeout(WIFI_CONNECT_TIMEOUT_S);
-  WiFiManagerParameter p_api("apiBase", "API Base", apiBase, sizeof(apiBase) - 1);
-  wm.addParameter(&p_api);
+  
+  // MQTT Parameters
+  char portStr[8];
+  snprintf(portStr, sizeof(portStr), "%d", mqttPort);
+  WiFiManagerParameter p_server("mqttServer", "MQTT Server", mqttServer, sizeof(mqttServer) - 1);
+  WiFiManagerParameter p_port("mqttPort", "MQTT Port", portStr, 7);
+  WiFiManagerParameter p_user("mqttUser", "MQTT User", mqttUser, sizeof(mqttUser) - 1);
+  WiFiManagerParameter p_pass("mqttPass", "MQTT Password", mqttPass, sizeof(mqttPass) - 1);
+  
+  wm.addParameter(&p_server);
+  wm.addParameter(&p_port);
+  wm.addParameter(&p_user);
+  wm.addParameter(&p_pass);
+  
   shouldSaveConfig = false;
   wm.setSaveConfigCallback(saveConfigCallback);
 
@@ -850,9 +1142,17 @@ static void setupWiFiManager(bool forceReset) {
     delay(800); ESP.restart();
   }
 
-  const char* newApi = p_api.getValue();
-  if (newApi && strlen(newApi) > 0) strlcpy(apiBase, newApi, sizeof(apiBase));
-  if (shouldSaveConfig) saveApiBase(apiBase);
+  // Save MQTT config if changed
+  const char* newServer = p_server.getValue();
+  if (newServer && strlen(newServer) > 0) strlcpy(mqttServer, newServer, sizeof(mqttServer));
+  const char* newPort = p_port.getValue();
+  if (newPort && strlen(newPort) > 0) mqttPort = atoi(newPort);
+  const char* newUser = p_user.getValue();
+  if (newUser && strlen(newUser) > 0) strlcpy(mqttUser, newUser, sizeof(mqttUser));
+  const char* newPass = p_pass.getValue();
+  if (newPass && strlen(newPass) > 0) strlcpy(mqttPass, newPass, sizeof(mqttPass));
+  
+  if (shouldSaveConfig) saveMqttConfig();
 }
 
 // =========================================
@@ -866,7 +1166,11 @@ static void handleCheckpointHit(const String& uid) {
   if (uid == String(HOME_MED_UID)) {
     haveSeenMED = true;
     if (state == RUN_RETURN && activeMissionId.length() > 0) {
-      motorsStop(); toneOff();
+      applyForwardBrake();
+      toneOff();
+      // Thêm: Quay 180 độ khi về MED
+      turnByAction('B'); // U-turn ưu tiên quay trái
+      ignoreNfcFor(900);
       sendReturned(activeMissionStatus == "cancelled" ? "returned_after_cancel" : "returned_ok");
       goIdleReset();
       beepOnce(200, 2400);
@@ -881,13 +1185,13 @@ static void handleCheckpointHit(const String& uid) {
   String nextUid = expectedNextUid();
   if (nextUid.length() == 0) return;
   if (uid != nextUid) {
-    motorsStop(); beepOnce(140, 1200);
+    applyForwardBrake(); beepOnce(140, 1200);
     driveBackward(140); delay(250); motorsStop();
     ignoreNfcFor(500);
     return;
   }
 
-  motorsStop();
+  applyForwardBrake();  // Phanh chủ động khi quét đúng checkpoint
   routeIndex++;
   if (state == RUN_OUTBOUND) {
     sendProgress("en_route", route[routeIndex].nodeId, "phase:outbound");
@@ -899,9 +1203,27 @@ static void handleCheckpointHit(const String& uid) {
 
   if (state == RUN_OUTBOUND && cancelPending) {
     cancelPending = false;
-    buildReturnFromVisited();
     activeMissionStatus = "cancelled";
-    startReturn("phase:return cancel_after_next_checkpoint", true);
+    
+    // Do U-turn first
+    applyForwardBrake();
+    turnByAction('B');  // 180 degree turn
+    ignoreNfcFor(900);
+    
+    // Get current node ID (the checkpoint we just reached)
+    String currentNode = route[routeIndex].nodeId;
+    cancelAtNodeId = currentNode;
+    
+    // Send position to Backend and wait for return route
+    sendPositionWaitingReturn(currentNode);
+    waitingForReturnRoute = true;
+    waitingReturnRouteStartTime = millis();
+    state = WAIT_FOR_RETURN_ROUTE;
+    
+#if SERIAL_DEBUG
+    Serial.print("Cancel at checkpoint: "); Serial.println(currentNode);
+    Serial.println("Waiting for return route from Backend...");
+#endif
     beepOnce(160, 1500);
     return;
   }
@@ -915,7 +1237,7 @@ static void handleCheckpointHit(const String& uid) {
   }
 
   if (state == RUN_OUTBOUND && routeIndex >= (int)outbound.size() - 1) {
-    motorsStop(); toneOff();
+    applyForwardBrake(); toneOff();
     turnByAction('B'); // Gyro U-Turn
     destUturnedBeforeWait = true;
     ignoreNfcFor(900);
@@ -960,18 +1282,6 @@ void setup() {
   oled.clearBuffer(); oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 12, "BOOT SYSTEM..."); oled.sendBuffer();
 
-  // --- MPU6050 Init ---
-  if (!mpu.begin()) {
-    oled.drawStr(0, 26, "MPU6050 FAIL"); oled.sendBuffer();
-    mpuOk = false;
-    delay(1000);
-  } else {
-    mpuOk = true;
-    mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-    mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-  }
-
   // --- ToF Init ---
   tof.setTimeout(120);
   tofOk = tof.init();
@@ -1008,12 +1318,28 @@ void setup() {
 
   setupWiFiManager(forceReset);
 
+  // --- MQTT Init ---
+  buildTopics();
+  mqttClient.setServer(mqttServer, mqttPort);
+  mqttClient.setCallback(mqttCallback);
+  mqttClient.setBufferSize(8192); // Tăng buffer cho mission payloads lớn
+  
+  // Initial MQTT connection
+  oled.clearBuffer(); oled.drawStr(0, 12, "MQTT CONNECTING..."); oled.sendBuffer();
+  mqttReconnect();
+
   goIdleReset();
   beepOnce(120, 2400);
 }
 
 void loop() {
   const unsigned long now = millis();
+
+  // --- MQTT Maintenance ---
+  if (!mqttClient.connected()) {
+    mqttReconnect();
+  }
+  mqttClient.loop(); // Process incoming messages
 
   updateCargoSwitch();
   
@@ -1033,19 +1359,19 @@ void loop() {
   }
 
   // --- IDLE STATE ---
+  // Với MQTT, mission được push tới qua callback parseMissionPayload()
+  // Không cần polling như HTTP
   if (state == IDLE_AT_MED) {
     motorsStop(); toneOff();
     if (!haveSeenMED) return;
-    if (now - lastPoll >= POLL_MS) {
-      lastPoll = now;
-      bool got = fetchMission();
-      if (got) {
-        if (activeMissionStatus == "cancelled") {
-          sendReturned("cancelled_before_start");
-          goIdleReset();
-        } else {
-          if (cargoHeld()) startOutbound();
-        }
+    
+    // Kiểm tra nếu đã nhận mission qua MQTT
+    if (activeMissionId.length() > 0 && outbound.size() >= 2) {
+      if (activeMissionStatus == "cancelled") {
+        sendReturned("cancelled_before_start");
+        goIdleReset();
+      } else {
+        if (cargoHeld()) startOutbound();
       }
     }
     return;
@@ -1054,24 +1380,45 @@ void loop() {
   // --- WAIT STATE ---
   if (state == WAIT_AT_DEST) {
     motorsStop(); toneOff();
-    if (now - lastCancelPoll >= CANCEL_POLL_MS) {
-      lastCancelPoll = now;
-      bool got = fetchMission();
-      if (!got || activeMissionId.length() == 0) { goIdleReset(); return; }
-      if (activeMissionStatus == "cancelled") {
-        startReturn("phase:return cancelled-at-bed", false); return;
-      }
+    
+    // Cancel được xử lý qua MQTT callback parseCancelPayload()
+    if (activeMissionStatus == "cancelled") {
+      startReturn("phase:return cancelled-at-bed", false); 
+      return;
     }
+    
     if (!cargoHeld()) {
       beepArrivedPattern();
       sendComplete("ok");
-      fetchMission();
+      // Với MQTT, không cần fetchMission() - route đã có sẵn
       if (retRoute.size() < 2 && outbound.size() >= 2) {
         retRoute = outbound; std::reverse(retRoute.begin(), retRoute.end());
       }
       if (activeMissionStatus.length() == 0) activeMissionStatus = "completed";
       startReturn("phase:return start-after-unload", false);
     }
+    return;
+  }
+
+  // --- WAIT FOR RETURN ROUTE FROM BACKEND ---
+  if (state == WAIT_FOR_RETURN_ROUTE) {
+    motorsStop(); toneOff();
+    
+    // Check timeout - fallback to local calculation if no response
+    if (millis() - waitingReturnRouteStartTime > RETURN_ROUTE_TIMEOUT_MS) {
+#if SERIAL_DEBUG
+      Serial.println("Return route timeout - using local calculation");
+#endif
+      buildReturnFromVisited();
+      waitingForReturnRoute = false;
+      state = RUN_RETURN;
+      routeIndex = 0;
+      obstacleHold = false;
+      beepOnce(120, 1200);
+    }
+    
+    // Return route will be set by parseReturnRoutePayload() via MQTT callback
+    // which will change state to RUN_RETURN
     return;
   }
 
@@ -1104,16 +1451,11 @@ void loop() {
       return;
     }
 
-    if (now - lastCancelPoll >= CANCEL_POLL_MS) {
-      lastCancelPoll = now;
-      bool got = fetchMission();
-      if (!got || activeMissionId.length() == 0) { goIdleReset(); return; }
-      if (activeMissionStatus == "cancelled" && state == RUN_OUTBOUND) {
-        if (!cancelPending) {
-          cancelPending = true; beepOnce(80, 1500);
-          sendProgress("en_route", currentNodeIdSafe(), "cancel_pending_next_checkpoint");
-        }
-      }
+    // Cancel được xử lý qua MQTT callback - chỉ cần check flag
+    if (activeMissionStatus == "cancelled" && state == RUN_OUTBOUND && !cancelPending) {
+      cancelPending = true; 
+      beepOnce(80, 1500);
+      sendProgress("en_route", currentNodeIdSafe(), "cancel_pending_next_checkpoint");
     }
 
     if (state == RUN_OUTBOUND && !cargoHeld()) {

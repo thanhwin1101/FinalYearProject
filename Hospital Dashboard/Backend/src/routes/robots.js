@@ -86,16 +86,42 @@ router.get('/carry/status', async (_req, res) => {
     const all = await Robot.find({ type: 'carry' }).lean();
     const online = all.filter(r => r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ONLINE_MS));
 
-    const robots = online.map(r => ({
-      robotId: r.robotId,
-      name: r.name,
-      status: r.status,
-      statusText: r.status,
-      batteryLevel: r.batteryLevel ?? 0,
-      carrying: r.transportData?.carryingItem || '—',
-      destination: r.transportData?.destination?.room || '—',
-      location: r.currentLocation?.room || '—',
-    }));
+    // Lookup active missions for destination info
+    const robotIds = online.map(r => r.robotId);
+    const activeMissions = await TransportMission.find({
+      carryRobotId: { $in: robotIds },
+      returnedAt: null,
+      status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
+    }).lean();
+    const missionMap = {};
+    for (const m of activeMissions) {
+      missionMap[m.carryRobotId] = m;
+    }
+
+    const robots = online.map(r => {
+      const mission = missionMap[r.robotId];
+      // currentLocation: prefer room string, fallback to raw string
+      const location = r.currentLocation?.room || 
+        (typeof r.currentLocation === 'string' ? r.currentLocation : '—');
+      // destination: from active mission bed/destination node
+      const destination = mission 
+        ? (mission.bedId || mission.destinationNodeId || '—') 
+        : (r.transportData?.destination?.room || '—');
+      // Current checkpoint from mission
+      const currentNode = mission?.currentNodeId || '';
+
+      return {
+        robotId: r.robotId,
+        name: r.name,
+        status: r.status,
+        statusText: r.status,
+        batteryLevel: r.batteryLevel ?? 0,
+        carrying: r.transportData?.carryingItem || '—',
+        destination,
+        location,
+        currentNode,
+      };
+    });
 
     const summary = {
       total: robots.length,

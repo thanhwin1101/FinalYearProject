@@ -36,6 +36,7 @@ function carryRobotToFrontend(robot: CarryRobotStatus): Robot {
     name: robot.name || `Carry-${robot.robotId}`,
     currentLocation: robot.location || 'Unknown',
     destination: robot.destination || '',
+    currentNode: robot.currentNode || '',
     status: mapStatus(robot.status),
     taskDescription: robot.carrying !== '—' ? `Carrying: ${robot.carrying}` : undefined,
     batteryLevel: robot.batteryLevel || 0,

@@ -33,6 +33,7 @@ export interface CarryRobotStatus {
   carrying: string;
   destination: string;
   location: string;
+  currentNode: string;
 }
 
 export interface CarryStatusResponse {

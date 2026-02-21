@@ -7,6 +7,7 @@ export interface Robot {
   name: string;
   currentLocation: string;
   destination: string;
+  currentNode?: string;
   status: RobotStatus;
   assignedPatientId?: string;
   taskDescription?: string;

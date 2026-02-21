@@ -5,6 +5,7 @@ import { PatientDashboard } from '@/app/components/PatientDashboard';
 import { RobotCenter } from '@/app/components/RobotCenter';
 import { PatientDetails } from '@/app/components/PatientDetails';
 import { ConnectionStatus } from '@/app/components/ConnectionStatus';
+import { RFIDProvider } from '@/app/contexts/RFIDContext';
 import { Patient } from '@/app/types/patient';
 import { usePatients } from '@/app/hooks/usePatients';
 import { useRobots } from '@/app/hooks/useRobots';
@@ -48,17 +49,17 @@ export default function App() {
     cancelDeliveryMission,
   } = useMissions();
 
-  const handleAddPatient = async (patient: Patient) => {
+  const handleAddPatient = async (patient: Patient, photoFile?: File) => {
     try {
-      await addPatient(patient);
+      await addPatient(patient, photoFile);
     } catch (err) {
       console.error('Failed to add patient:', err);
     }
   };
 
-  const handleUpdatePatient = async (updatedPatient: Patient) => {
+  const handleUpdatePatient = async (updatedPatient: Patient, photoFile?: File) => {
     try {
-      await updatePatient(updatedPatient);
+      await updatePatient(updatedPatient, photoFile);
     } catch (err) {
       console.error('Failed to update patient:', err);
     }
@@ -91,7 +92,7 @@ export default function App() {
     // Check if patient has a bed assigned
     if (!patient.roomBedId) {
       console.error('Patient has no bed assigned:', patient.fullName);
-      alert('Bệnh nhân chưa được gán giường!');
+      alert('Patient has no bed assigned!');
       return null;
     }
 
@@ -99,7 +100,7 @@ export default function App() {
     const availableRobot = robots.find(r => r.type === 'Carry' && r.status === 'Idle');
     if (!availableRobot) {
       console.error('No idle Carry robot available');
-      alert('Không có Carry Robot nào đang rảnh!');
+      alert('No Carry Robot available!');
       return null;
     }
 
@@ -145,6 +146,7 @@ export default function App() {
   const hasError = patientsError || robotsError;
 
   return (
+    <RFIDProvider>
     <div className="min-h-screen bg-background flex flex-col">
       {/* Sticky Header + Nav Container */}
       <div className="sticky top-0 z-50">
@@ -255,5 +257,6 @@ export default function App() {
         </div>
       </footer>
     </div>
+    </RFIDProvider>
   );
 }

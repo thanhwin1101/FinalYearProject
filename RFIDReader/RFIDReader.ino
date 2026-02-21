@@ -106,7 +106,7 @@ void loop() {
     return;
   }
   
-  // Convert UID to hex string
+  // Convert UID to hex string (uppercase, no prefix)
   String uidStr = getUIDString();
   
   // Debounce check
@@ -120,8 +120,7 @@ void loop() {
   lastUID = uidStr;
   lastReadTime = millis();
   
-  // Send UID to PC
-  Serial.print("RFID:");
+  // Send UID to PC (just UID, uppercase)
   Serial.println(uidStr);
   
   // Visual/audio feedback

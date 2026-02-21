@@ -16,8 +16,8 @@ type SortOption = 'bed' | 'name-asc' | 'name-desc' | 'date-newest' | 'date-oldes
 
 interface PatientDashboardProps {
   patients: Patient[];
-  onAddPatient: (patient: Patient) => void;
-  onUpdatePatient: (patient: Patient) => void;
+  onAddPatient: (patient: Patient, photoFile?: File) => void;
+  onUpdatePatient: (patient: Patient, photoFile?: File) => void;
   onDeletePatient: (id: string) => void;
 }
 
@@ -133,11 +133,11 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
     setIsFormOpen(true);
   };
 
-  const handleSavePatient = (patient: Patient) => {
+  const handleSavePatient = (patient: Patient, photoFile?: File) => {
     if (editingPatient) {
-      onUpdatePatient(patient);
+      onUpdatePatient(patient, photoFile);
     } else {
-      onAddPatient(patient);
+      onAddPatient(patient, photoFile);
     }
   };
 
@@ -411,6 +411,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
         }}
         onSave={handleSavePatient}
         editingPatient={editingPatient}
+        existingPatients={patients}
       />
 
       {/* Patient Details Dialog */}

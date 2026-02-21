@@ -1,0 +1,53 @@
+# ===== Node.js =====
+node_modules/
+dist/
+build/
+.cache/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== Environment =====
+.env
+.env.local
+.env.*.local
+
+# ===== PlatformIO =====
+.pio/
+.pioenvs/
+.piolibdeps/
+*.elf
+*.bin
+*.hex
+*.map
+
+# ===== Arduino =====
+*.ino.elf
+*.ino.bin
+*.ino.hex
+
+# ===== Uploads (patient photos) =====
+Hospital Dashboard/Backend/uploads/patients/*.jpg
+Hospital Dashboard/Backend/uploads/patients/*.jpeg
+Hospital Dashboard/Backend/uploads/patients/*.png
+Hospital Dashboard/Backend/uploads/patients/*.webp
+
+# ===== MongoDB local data =====
+data/
+
+# ===== VS Code =====
+.vscode/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== TypeScript / Vite build output =====
+Hospital Dashboard/Frontend/dist/
+
+# ===== Misc =====
+*.swp
+*.swo
