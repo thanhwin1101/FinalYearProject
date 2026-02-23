@@ -5,15 +5,9 @@
 #include <vector>
 #include "globals.h"
 
-// =========================================
-// WIFI
-// =========================================
 void wifiInit(bool forcePortal = false);
 bool isWiFiConnected();
 
-// =========================================
-// MQTT
-// =========================================
 void mqttInit();
 void mqttLoop();
 void mqttReconnect();
@@ -32,9 +26,6 @@ void parseCancelPayload(const char* payload);
 void parseReturnRoutePayload(const char* payload);
 void parseCommandPayload(const char* payload);
 
-// =========================================
-// ROUTE LOGIC
-// =========================================
 const std::vector<RoutePoint>& currentRoute();
 String expectedNextUid();
 String currentNodeIdSafe();
@@ -43,9 +34,6 @@ const char* turnCharLabel(char a);
 char invertTurn(char a);
 void buildReturnFromVisited();
 
-// =========================================
-// STATE MACHINE
-// =========================================
 void startOutbound();
 void enterWaitAtDest();
 void startReturn(const char* note, bool doUturn);

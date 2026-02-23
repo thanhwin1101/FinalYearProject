@@ -207,4 +207,6 @@
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiUdp.h \
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/cores/esp32/Udp.h \
  C:/Users/ironc/.platformio/packages/framework-arduinoespressif32/cores/esp32/cbuf.h \
- .pio/libdeps/esp32dev/PubSubClient/src/PubSubClient.h src/config.h
+ .pio/libdeps/esp32dev/PubSubClient/src/PubSubClient.h \
+ .pio/libdeps/esp32dev/HUSKYLENS/HUSKYLENS.h \
+ .pio/libdeps/esp32dev/HUSKYLENS/HuskyLensProtocolCore.h src/config.h
