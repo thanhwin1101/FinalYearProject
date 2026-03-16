@@ -26,6 +26,40 @@ const TOPICS = {
 
 let client = null;
 let connected = false;
+const legacyFieldWarned = new Set();
+const MQTT_STRICT_SCHEMA = process.env.MQTT_STRICT_SCHEMA === '1' || process.env.NODE_ENV === 'staging';
+const lastMissionRepublishAt = new Map();
+const MISSION_REPUBLISH_COOLDOWN_MS = 5000;
+
+function warnLegacyField(context, fieldName, replacement) {
+  const key = `${context}:${fieldName}`;
+  if (legacyFieldWarned.has(key)) return;
+  legacyFieldWarned.add(key);
+  console.warn(`[MQTT] Legacy field '${fieldName}' used in ${context}. Prefer '${replacement}'.`);
+}
+
+function normalizeNodeFields(payload = {}, context = 'unknown') {
+  const usedLegacyNode = (!payload.currentNodeId && payload.nodeId);
+  const usedLegacyPrev = (!payload.previousNodeId && payload.prevNodeId);
+
+  if (usedLegacyNode) {
+    if (MQTT_STRICT_SCHEMA) {
+      throw new Error(`[MQTT] Rejected legacy field 'nodeId' in ${context} (strict schema enabled)`);
+    }
+    warnLegacyField(context, 'nodeId', 'currentNodeId');
+  }
+  if (usedLegacyPrev) {
+    if (MQTT_STRICT_SCHEMA) {
+      throw new Error(`[MQTT] Rejected legacy field 'prevNodeId' in ${context} (strict schema enabled)`);
+    }
+    warnLegacyField(context, 'prevNodeId', 'previousNodeId');
+  }
+
+  return {
+    currentNodeId: payload.currentNodeId || null,
+    previousNodeId: payload.previousNodeId || null,
+  };
+}
 
 /**
  * Initialize MQTT connection
@@ -110,6 +144,9 @@ async function handleTelemetry(robotId, payload) {
     const now = new Date();
     const type = payload.type || 'carry';
     let status = payload.status || 'idle';
+    const telemetryNodeId = String(
+      payload.currentNodeId || payload.currentLocation?.room || ''
+    ).trim().toUpperCase();
 
     const batteryLevel =
       (typeof payload.batteryLevel === 'number' && Number.isFinite(payload.batteryLevel))
@@ -117,13 +154,47 @@ async function handleTelemetry(robotId, payload) {
         : 100;
 
     // Mission-aware status for carry robots
+    let activeMission = null;
     if (type === 'carry') {
-      const active = await TransportMission.exists({
+      activeMission = await TransportMission.findOne({
         carryRobotId: robotId,
         returnedAt: null,
         status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
-      });
-      status = active ? 'busy' : 'idle';
+      }).sort({ updatedAt: -1, createdAt: -1 });
+
+      // Fail-safe: if mission is cancelled and robot already reports home node, close return immediately.
+      const atHomeNode = telemetryNodeId === 'MED';
+      if (activeMission?.status === 'cancelled' && atHomeNode) {
+        await TransportMission.updateOne(
+          { missionId: activeMission.missionId, returnedAt: null },
+          { $set: { returnedAt: now, updatedAt: now } }
+        );
+        activeMission = null;
+      }
+
+      status = activeMission ? 'busy' : 'idle';
+    }
+
+    // If robot rebooted and reports idle while mission is still active, re-publish mission assignment.
+    if (type === 'carry' && activeMission) {
+      const robotReportedIdle = String(payload.status || '').toLowerCase() === 'idle';
+      if (robotReportedIdle) {
+        const nowMs = Date.now();
+        const key = `${robotId}:${activeMission.missionId}`;
+        const lastMs = lastMissionRepublishAt.get(key) || 0;
+        if (nowMs - lastMs >= MISSION_REPUBLISH_COOLDOWN_MS) {
+          publishMissionAssign(robotId, {
+            missionId: activeMission.missionId,
+            status: activeMission.status,
+            patientName: activeMission.patientName || '',
+            bedId: activeMission.bedId || '',
+            outboundRoute: activeMission.outboundRoute || [],
+            returnRoute: activeMission.returnRoute || []
+          });
+          lastMissionRepublishAt.set(key, nowMs);
+          console.log(`[MQTT] Re-published mission ${activeMission.missionId} to ${robotId} after idle telemetry`);
+        }
+      }
     }
 
     // Low battery takes priority
@@ -183,7 +254,8 @@ async function handleTelemetry(robotId, payload) {
  */
 async function handleProgress(robotId, payload) {
   try {
-    const { missionId, status, currentNodeId, batteryLevel, note } = payload;
+    const { missionId, status, batteryLevel, note } = payload;
+    const { currentNodeId } = normalizeNodeFields(payload, 'mission/progress');
     if (!missionId) return;
 
     const update = {
@@ -299,58 +371,107 @@ async function handleReturned(robotId, payload) {
 }
 
 // ========================================
-// RETURN ROUTE CALCULATION (NEW)
+// RETURN ROUTE CALCULATION
 // ========================================
 
+// ---- VECTOR 2 POINTS — Heading helpers ----
+// Map coordinate system: Y increases DOWNWARD (South), X increases RIGHT (East).
+// Cardinal indices: N=0, E=1, S=2, W=3
+const CARDINAL = { N: 0, E: 1, S: 2, W: 3 };
+const CARDINAL_NAME = ['N', 'E', 'S', 'W'];
+
 /**
- * Handle robot reporting position and waiting for return route
- * Robot gửi: { missionId, currentNodeId }
- * Backend tính route từ currentNodeId về MED và gửi lại
+ * Get cardinal direction from point A to point B.
+ */
+function getCardinalDirection(fromCoords, toCoords) {
+  const dx = (toCoords.x || 0) - (fromCoords.x || 0);
+  const dy = (toCoords.y || 0) - (fromCoords.y || 0);
+  if (dx === 0 && dy === 0) return CARDINAL.N; // fallback
+  if (Math.abs(dx) > Math.abs(dy)) {
+    return dx > 0 ? CARDINAL.E : CARDINAL.W;
+  } else {
+    return dy > 0 ? CARDINAL.S : CARDINAL.N;
+  }
+}
+
+/**
+ * Compute relative turn action from current heading to required direction.
+ * Returns 'F' (forward), 'R' (right 90°), 'B' (u-turn 180°), 'L' (left 90°).
+ */
+function getRelativeTurn(heading, required) {
+  const diff = ((required - heading) + 4) % 4;
+  switch (diff) {
+    case 0: return 'F';
+    case 1: return 'R';
+    case 2: return 'B';
+    case 3: return 'L';
+    default: return 'F';
+  }
+}
+
+/**
+ * Handle robot reporting position and waiting for return route.
+ * 
+ * **Vector 2 Points Algorithm:**
+ * Robot gửi: { missionId, currentNodeId, previousNodeId }
+ * - Dùng vector (previousNode → currentNode) để xác định heading hiện tại.
+ * - Tính route từ currentNode về MED.
+ * - Action đầu tiên được tính tương đối so với heading (F/B/L/R).
+ * - Hỗ trợ cả mission thường lẫn recovery_mode (không cần TransportMission).
  */
 async function handleWaitingReturnRoute(robotId, payload) {
   try {
-    const { missionId, currentNodeId } = payload;
-    if (!missionId || !currentNodeId) {
-      console.error('[MQTT] Missing missionId or currentNodeId in waiting_return');
+    const { missionId } = payload;
+    const { currentNodeId, previousNodeId } = normalizeNodeFields(payload, 'position/waiting_return');
+    if (!currentNodeId) {
+      console.error('[MQTT] Missing currentNodeId in waiting_return');
       return;
     }
 
-    console.log(`[MQTT] Robot ${robotId} waiting at ${currentNodeId} for return route`);
+    const effectiveMissionId = missionId || 'recovery_mode';
+    const isRecovery = (effectiveMissionId === 'recovery_mode');
 
-    // Get mission to find mapId
-    const mission = await TransportMission.findOne({ missionId }).lean();
-    if (!mission) {
-      console.error(`[MQTT] Mission ${missionId} not found`);
-      return;
+    console.log(`[MQTT] Robot ${robotId} waiting at ${currentNodeId} (prev: ${previousNodeId || 'none'}, mission: ${effectiveMissionId})`);
+
+    // Determine mapId — for recovery_mode use default, otherwise look up mission
+    let mapId = 'floor1';
+    if (!isRecovery) {
+      const mission = await TransportMission.findOne({ missionId: effectiveMissionId }).lean();
+      if (mission) {
+        mapId = mission.mapId;
+      } else {
+        console.warn(`[MQTT] Mission ${effectiveMissionId} not found in DB, using default mapId`);
+      }
     }
 
-    // Calculate return route from current position
-    const returnRoute = await calculateReturnRouteFromNode(mission.mapId, currentNodeId);
-    
+    // Calculate return route with heading awareness
+    const returnRoute = await calculateReturnRouteFromNode(mapId, currentNodeId, previousNodeId);
+
     if (!returnRoute || returnRoute.length < 2) {
       console.error(`[MQTT] Could not calculate return route from ${currentNodeId}`);
-      // Send error to robot
-      publishReturnRoute(robotId, missionId, [], 'error');
+      publishReturnRoute(robotId, effectiveMissionId, [], 'error');
       return;
     }
 
-    // Update mission with new status
-    await TransportMission.findOneAndUpdate(
-      { missionId },
-      { 
-        $set: { 
-          status: 'returning',
-          currentNodeId,
-          returnRoute,
-          updatedAt: new Date()
-        },
-        $push: { notes: { timestamp: new Date(), text: `Return route calculated from ${currentNodeId}` } }
-      }
-    );
+    // Update TransportMission if it exists (skip for recovery_mode)
+    if (!isRecovery) {
+      await TransportMission.findOneAndUpdate(
+        { missionId: effectiveMissionId },
+        {
+          $set: {
+            status: 'returning',
+            currentNodeId,
+            returnRoute,
+            updatedAt: new Date()
+          },
+          $push: { notes: { timestamp: new Date(), text: `Vector return route: ${previousNodeId || '?'} → ${currentNodeId} → MED (${returnRoute.length} nodes)` } }
+        }
+      );
+    }
 
     // Send return route to robot
-    publishReturnRoute(robotId, missionId, returnRoute, 'ok');
-    console.log(`[MQTT] Return route sent to ${robotId}: ${returnRoute.length} nodes`);
+    publishReturnRoute(robotId, effectiveMissionId, returnRoute, 'ok');
+    console.log(`[MQTT] Return route sent to ${robotId}: ${returnRoute.length} nodes, heading-aware=${!!previousNodeId}`);
 
   } catch (err) {
     console.error('[MQTT] handleWaitingReturnRoute error:', err.message);
@@ -358,16 +479,17 @@ async function handleWaitingReturnRoute(robotId, payload) {
 }
 
 /**
- * Calculate return route from any node back to MED
- * Uses the corridor path based on node position
+ * Calculate return route from any node back to MED.
+ * If previousNodeId is provided, uses Vector 2 Points to determine heading
+ * and overrides the first action accordingly.
  */
-async function calculateReturnRouteFromNode(mapId, fromNodeId) {
+async function calculateReturnRouteFromNode(mapId, fromNodeId, previousNodeId = null) {
   try {
     const map = await MapGraph.findOne({ mapId }).lean();
     if (!map) return null;
 
     const nodes = new Map((map.nodes || []).map(n => [n.nodeId, n]));
-    
+
     // Parse the current node to determine which corridor to use
     const nodeIds = buildReturnPath(fromNodeId);
     if (!nodeIds || nodeIds.length < 2) return null;
@@ -389,8 +511,33 @@ async function calculateReturnRouteFromNode(mapId, fromNodeId) {
       };
     });
 
-    // Compute actions for return path
+    // Compute standard turn actions based on room geometry
     computeReturnActions(routePoints, fromNodeId);
+
+    // ---- VECTOR 2 POINTS: Override first action based on actual heading ----
+    if (previousNodeId && routePoints.length >= 2) {
+      const prevNode = nodes.get(previousNodeId);
+      const curNode  = nodes.get(fromNodeId);
+
+      if (prevNode?.coordinates && curNode?.coordinates) {
+        const heading  = getCardinalDirection(prevNode.coordinates, curNode.coordinates);
+        const required = getCardinalDirection(
+          curNode.coordinates,
+          { x: routePoints[1].x, y: routePoints[1].y }
+        );
+        const firstAction = getRelativeTurn(heading, required);
+
+        routePoints[0].action  = firstAction;
+        routePoints[0].actions = firstAction !== 'F' ? [firstAction, 'F'] : ['F'];
+
+        console.log(
+          `[MQTT] Vector2Pts: ${previousNodeId}→${fromNodeId} heading=${CARDINAL_NAME[heading]}, ` +
+          `next=${routePoints[1].nodeId} required=${CARDINAL_NAME[required]}, firstAction=${firstAction}`
+        );
+      } else {
+        console.warn(`[MQTT] Vector2Pts: Missing coordinates for ${previousNodeId} or ${fromNodeId}, using geometry-only actions`);
+      }
+    }
 
     return routePoints;
   } catch (err) {

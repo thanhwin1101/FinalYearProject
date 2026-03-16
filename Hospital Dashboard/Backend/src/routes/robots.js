@@ -35,6 +35,10 @@ router.put('/:id/telemetry', async (req, res) => {
 
     const type = normalizeType(body.type) || 'carry';
     let status = normalizeStatus(body.status) || 'idle';
+    const telemetryNodeId = cleanString(
+      body.currentNodeId || body.currentLocation?.room || '',
+      32
+    ).toUpperCase();
 
     const batteryLevel =
       (typeof body.batteryLevel === 'number' && Number.isFinite(body.batteryLevel))
@@ -43,13 +47,23 @@ router.put('/:id/telemetry', async (req, res) => {
 
     // ✅ Chỉ cho busy nếu còn mission chưa returned
     if (type === 'carry') {
-      const active = await TransportMission.exists({
+      let activeMission = await TransportMission.findOne({
         carryRobotId: robotId,
         returnedAt: null,
         status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
-      });
+      }).sort({ updatedAt: -1, createdAt: -1 });
 
-      if (!active) status = 'idle';
+      // Fail-safe: if mission was cancelled and robot is already at home node, close mission return now.
+      const atHomeNode = telemetryNodeId === 'MED';
+      if (activeMission?.status === 'cancelled' && atHomeNode) {
+        await TransportMission.updateOne(
+          { missionId: activeMission.missionId, returnedAt: null },
+          { $set: { returnedAt: now, updatedAt: now } }
+        );
+        activeMission = null;
+      }
+
+      if (!activeMission) status = 'idle';
       else status = 'busy';
     }
 

@@ -419,10 +419,11 @@ router.post('/delivery', async (req, res) => {
 
     // Publish mission to robot via MQTT
     publishMissionAssign(carry.robotId, {
+      payloadVersion: 2,
       missionId,
       status: 'pending',
       patientName,
-      bedId: normalBedId,
+      destBed: normalBedId,
       outboundRoute,
       returnRoute
     });
