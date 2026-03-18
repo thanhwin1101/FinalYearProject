@@ -1,12 +1,10 @@
-/*  huskylens_wrapper.h  –  HuskyLens camera abstraction
- */
 #pragma once
 #include <Arduino.h>
 
 struct HuskyTarget {
     bool  detected;
-    int16_t xCenter;    // pixel x
-    int16_t yCenter;    // pixel y
+    int16_t xCenter;
+    int16_t yCenter;
     int16_t width;
     int16_t height;
     int16_t id;
@@ -23,9 +21,9 @@ struct HuskyLine {
 void  huskyInit();
 void  huskyMaintain();
 bool  huskyIsReady();
-bool  huskyRequest();                      // Poll for new frame
-HuskyTarget huskyGetTarget();              // Block detection (face / object / tag)
-HuskyLine   huskyGetLine();                // Arrow detection (line tracking)
+bool  huskyRequest();
+HuskyTarget huskyGetTarget();
+HuskyLine   huskyGetLine();
 
 void  huskySwitchToObjectTracking();
 void  huskySwitchToFaceRecognition();

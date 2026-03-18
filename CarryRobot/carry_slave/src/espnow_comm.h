@@ -1,5 +1,3 @@
-/*  espnow_comm.h  –  ESP-NOW slave side
- */
 #pragma once
 #include <Arduino.h>
 #include "espnow_msg.h"

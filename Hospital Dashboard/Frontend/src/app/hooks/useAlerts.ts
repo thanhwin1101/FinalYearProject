@@ -7,7 +7,6 @@ export function useAlerts(pollInterval: number = 10000) {
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch active alerts
   const fetchAlerts = useCallback(async () => {
     try {
       setError(null);
@@ -22,7 +21,6 @@ export function useAlerts(pollInterval: number = 10000) {
     }
   }, []);
 
-  // Initial fetch and polling
   useEffect(() => {
     fetchAlerts();
 
@@ -37,7 +35,6 @@ export function useAlerts(pollInterval: number = 10000) {
     };
   }, [fetchAlerts, pollInterval]);
 
-  // Resolve an alert
   const resolveAlert = useCallback(async (id: string) => {
     try {
       setError(null);
@@ -51,13 +48,11 @@ export function useAlerts(pollInterval: number = 10000) {
     }
   }, []);
 
-  // Manual refresh
   const refresh = useCallback(() => {
     setLoading(true);
     fetchAlerts();
   }, [fetchAlerts]);
 
-  // Get count by level
   const alertCounts = {
     total: alerts.length,
     critical: alerts.filter(a => a.level === 'critical').length,

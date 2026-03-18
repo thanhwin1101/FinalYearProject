@@ -46,17 +46,17 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
 
   const handleAddMedication = () => {
     if (!newMed.name || !newMed.dosage) return;
-    
+
     const medication: MedicationEntry = {
       id: crypto.randomUUID(),
       ...newMed
     };
-    
+
     const updatedPatient = {
       ...patient,
       medicationLog: [...patient.medicationLog, medication]
     };
-    
+
     onUpdatePatient?.(updatedPatient);
     setNewMed({ name: '', dosage: '', frequency: '', prescribedBy: '', startDate: new Date().toISOString().split('T')[0], notes: '' });
     setShowMedForm(false);
@@ -72,12 +72,12 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
 
   const handleAddAllergen = () => {
     if (!newAllergen.trim()) return;
-    
+
     const updatedPatient = {
       ...patient,
       allergens: [...patient.allergens, newAllergen.trim()]
     };
-    
+
     onUpdatePatient?.(updatedPatient);
     setNewAllergen('');
     setShowAllergenForm(false);
@@ -107,7 +107,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
           <DialogTitle className="text-xl font-semibold">Patient Medical Details</DialogTitle>
         </DialogHeader>
 
-        {/* Patient Header */}
+        {}
         <div className="flex items-center gap-4 p-4 bg-blue-50 rounded-lg flex-shrink-0">
           <div className="w-14 h-14 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden">
             {patient.photo ? (
@@ -133,7 +133,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
           </Badge>
         </div>
 
-        {/* Tabs */}
+        {}
         <Tabs defaultValue="medications" className="w-full flex-1 flex flex-col min-h-0">
           <TabsList className="grid w-full grid-cols-3 flex-shrink-0">
             <TabsTrigger value="medications" className="text-sm">
@@ -150,7 +150,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
             </TabsTrigger>
           </TabsList>
 
-          {/* Medication Log */}
+          {}
           <TabsContent value="medications" className="flex-1 overflow-y-auto space-y-4 pr-2">
             <div className="flex justify-between items-center">
               <h3 className="text-base font-semibold">Medication Log</h3>
@@ -160,7 +160,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
               </Button>
             </div>
 
-            {/* Add Medication Form */}
+            {}
             {showMedForm && (
               <div className="p-4 border rounded-lg bg-gray-50 space-y-3">
                 <h4 className="font-medium text-sm">New Medication</h4>
@@ -285,7 +285,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
             )}
           </TabsContent>
 
-          {/* Allergens */}
+          {}
           <TabsContent value="allergens" className="flex-1 overflow-y-auto space-y-4 pr-2">
             <div className="flex justify-between items-center">
               <h3 className="text-base font-semibold">Known Allergens</h3>
@@ -295,7 +295,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
               </Button>
             </div>
 
-            {/* Add Allergen Form */}
+            {}
             {showAllergenForm && (
               <div className="p-4 border rounded-lg bg-gray-50 space-y-3">
                 <h4 className="font-medium text-sm">New Allergen</h4>
@@ -347,7 +347,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
             </div>
           </TabsContent>
 
-          {/* Notes */}
+          {}
           <TabsContent value="notes" className="flex-1 overflow-y-auto space-y-4 pr-2">
             <div className="flex justify-between items-center">
               <h3 className="text-base font-semibold">Patient Notes</h3>
@@ -358,7 +358,7 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
                 </Button>
               )}
             </div>
-            
+
             {editingNotes ? (
               <div className="space-y-3">
                 <textarea

@@ -7,9 +7,6 @@ import MapGraph from '../models/MapGraph.js';
 
 const r = Router();
 
-// =========================
-// Upload config
-// =========================
 const UPLOAD_DIR = path.join(process.cwd(), 'uploads', 'patients');
 
 async function ensureUploadDir() {
@@ -36,12 +33,9 @@ function fileFilter(_req, file, cb) {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 } // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// =========================
-// Helpers
-// =========================
 function norm(s='') {
   return String(s).toLowerCase().replace(/\s+/g,'').replace(/[^a-z0-9]/g,'');
 }
@@ -49,7 +43,7 @@ function norm(s='') {
 function toAbsPathFromPhoto(photoPathOrUrl) {
   if (!photoPathOrUrl) return null;
   if (photoPathOrUrl.startsWith('/')) {
-    const rel = photoPathOrUrl.replace(/^\//, '');
+    const rel = photoPathOrUrl.replace(/^\/+/, '');
     return path.join(process.cwd(), rel);
   }
   return path.join(process.cwd(), photoPathOrUrl);
@@ -106,7 +100,7 @@ function getBedsAliases(bedId) {
   const aliases = [String(bedId).toUpperCase()];
   const canonical = String(bedId).match(/^R(\d+)([MO])(\d+)$/i);
   const legacy = String(bedId).match(/^R(\d+)-Bed(\d+)$/i);
-  
+
   if (canonical) {
     const leg = canonicalToLegacy(bedId);
     if (leg) aliases.push(leg.toUpperCase());
@@ -117,18 +111,18 @@ function getBedsAliases(bedId) {
     const can = `R${room}${bedMap[bed]}`;
     if (can) aliases.push(can.toUpperCase());
   }
-  
+
   return aliases;
 }
 
 function normalizeBedToCanonical(bedId) {
   const canonical = String(bedId).match(/^R(\d+)([MO])(\d+)$/i);
   const legacy = String(bedId).match(/^R(\d+)-Bed(\d+)$/i);
-  
+
   if (canonical) {
     return `R${canonical[1]}${canonical[2].toUpperCase()}${canonical[3]}`;
   }
-  
+
   if (legacy) {
     const room = legacy[1];
     const bed = Number(legacy[2]);
@@ -136,7 +130,7 @@ function normalizeBedToCanonical(bedId) {
     const can = `R${room}${bedMap[bed]}`;
     return can || null;
   }
-  
+
   return null;
 }
 
@@ -192,10 +186,6 @@ function toPatientSummary(p) {
   };
 }
 
-// =========================
-// BEDS endpoints
-// =========================
-
 r.get('/beds', async (req, res) => {
   try {
     const mapId = String(req.query.mapId || 'F1');
@@ -224,18 +214,13 @@ r.get('/by-bed/:bedId', async (req, res) => {
   }
 });
 
-// =========================
-// GET PATIENT BY RFID CARD NUMBER (for Biped Robot)
-// =========================
 r.get('/by-card/:cardNumber', async (req, res) => {
   try {
     const cardNumber = String(req.params.cardNumber || '').trim().toUpperCase();
     if (!cardNumber) return res.status(400).json({ message: 'cardNumber required' });
 
-    // Tìm patient theo cardNumber (RFID UID)
-    // Hỗ trợ cả format có dấu ':' và không có
     const normalizedCard = cardNumber.replace(/[:\-\s]/g, '');
-    
+
     const p = await Patient.findOne({
       $or: [
         { cardNumber: cardNumber },
@@ -246,13 +231,13 @@ r.get('/by-card/:cardNumber', async (req, res) => {
     }).lean();
 
     if (!p) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         found: false,
-        message: 'Patient not found with this card' 
+        message: 'Patient not found with this card'
       });
     }
 
-    res.json({ 
+    res.json({
       found: true,
       patient: {
         _id: p._id,
@@ -273,9 +258,6 @@ r.get('/by-card/:cardNumber', async (req, res) => {
   }
 });
 
-// =========================
-// META
-// =========================
 r.get('/meta', async (_req, res) => {
   const statuses = ['Stable', 'Under Observation', 'Critical', 'Discharged'];
   const doctors = await Patient.distinct('primaryDoctor');
@@ -288,9 +270,6 @@ r.get('/meta', async (_req, res) => {
   });
 });
 
-// =========================
-// LIST
-// =========================
 r.get('/', async (req, res) => {
   try {
     const { q, status, doctor, department, from, to, sort } = req.query;
@@ -312,7 +291,7 @@ r.get('/', async (req, res) => {
 
     if (q && String(q).trim()) {
       const target = norm(q);
-      list = list.filter(p => 
+      list = list.filter(p =>
         norm(p.fullName || '').includes(target) ||
         norm(p.mrn || '').includes(target) ||
         norm(p.cardNumber || '').includes(target) ||
@@ -338,9 +317,6 @@ r.get('/', async (req, res) => {
   }
 });
 
-// =========================
-// MRN generate
-// =========================
 r.get('/mrn/generate', async (_req, res) => {
   const year = new Date().getFullYear();
   for (let i = 0; i < 30; i++) {
@@ -352,9 +328,6 @@ r.get('/mrn/generate', async (_req, res) => {
   res.status(500).json({ message: 'Cannot generate MRN now' });
 });
 
-// =========================
-// CREATE
-// =========================
 r.post('/', upload.single('photo'), async (req, res) => {
   try {
     const body = req.body || {};
@@ -412,9 +385,6 @@ r.post('/', upload.single('photo'), async (req, res) => {
   }
 });
 
-// =========================
-// UPDATE
-// =========================
 r.put('/:id', upload.single('photo'), async (req, res) => {
   try {
     const id = req.params.id;
@@ -486,9 +456,6 @@ r.put('/:id', upload.single('photo'), async (req, res) => {
   }
 });
 
-// =========================
-// DELETE
-// =========================
 r.delete('/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -504,9 +471,6 @@ r.delete('/:id', async (req, res) => {
   }
 });
 
-// =========================
-// DETAILS
-// =========================
 r.get('/:id/details', async (req, res) => {
   try {
     const p = await Patient.findById(req.params.id).lean();
@@ -523,7 +487,6 @@ r.get('/:id/details', async (req, res) => {
   }
 });
 
-// Timeline
 r.post('/:id/timeline', async (req, res) => {
   try {
     const { title, description, createdBy, at } = req.body || {};
@@ -559,7 +522,6 @@ r.delete('/:id/timeline/:tid', async (req, res) => {
   }
 });
 
-// Prescriptions
 r.post('/:id/prescriptions', async (req, res) => {
   try {
     const b = req.body || {};
@@ -617,7 +579,6 @@ r.delete('/:id/prescriptions/:pid', async (req, res) => {
   }
 });
 
-// Notes
 r.post('/:id/notes', async (req, res) => {
   try {
     const { text, createdBy } = req.body || {};

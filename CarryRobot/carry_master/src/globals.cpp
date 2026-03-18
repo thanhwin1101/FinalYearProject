@@ -1,5 +1,3 @@
-/*  globals.cpp  –  Master ESP32 global state definitions
- */
 #include "globals.h"
 
 volatile RobotState  robotState          = ST_IDLE;
@@ -32,3 +30,10 @@ unsigned long lastUsMs           = 0;
 unsigned long lastHuskyMs        = 0;
 unsigned long lastEspnowTxMs    = 0;
 unsigned long lastObstacleBeepMs = 0;
+
+SemaphoreHandle_t g_i2cMutex = nullptr;
+
+volatile bool     g_tofValid  = false;
+volatile uint16_t g_tofMm     = 0;
+volatile long     g_usLeftMm  = -1;
+volatile long     g_usRightMm = -1;

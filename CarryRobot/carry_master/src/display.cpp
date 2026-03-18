@@ -1,13 +1,3 @@
-/*  display.cpp  –  OLED rendering for each robot state
- *
- *  Layout (128×64 SSD1306):
- *    y=14  Header text  (font 6×12)
- *    y=18  Horizontal divider
- *    y=34  Body line 1
- *    y=50  Body line 2
- *    y=54  Thin divider  (only on interactive states)
- *    y=62  Button-hint row  (font 5×7, small)
- */
 #include "display.h"
 #include "config.h"
 #include "globals.h"
@@ -17,23 +7,20 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
-// SSD1306 128×64 I2C
 static U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
-// ── Internal helpers ──────────────────────────────────────────────
+static inline void i2cLock()   { if (g_i2cMutex) xSemaphoreTake(g_i2cMutex, portMAX_DELAY); }
+static inline void i2cUnlock() { if (g_i2cMutex) xSemaphoreGive(g_i2cMutex); }
 
 static void setMainFont()  { u8g2.setFont(u8g2_font_6x12_tr); }
 static void setSmallFont() { u8g2.setFont(u8g2_font_5x7_tr);  }
 
-/* Draw a centred header + horizontal rule */
 static void drawHeader(const char* title) {
     setMainFont();
     u8g2.drawStr((128 - u8g2.getStrWidth(title)) / 2, 14, title);
     u8g2.drawHLine(0, 18, 128);
 }
 
-/* Draw a small hint row at the very bottom with a thin separator line.
-   hintStr should be ≤ ~25 chars at 5-px font width. */
 static void drawHint(const char* hintStr) {
     u8g2.drawHLine(0, 54, 128);
     setSmallFont();
@@ -42,7 +29,6 @@ static void drawHint(const char* hintStr) {
     setMainFont();
 }
 
-/* Small WiFi+MQTT status badge in top-right corner (boot/idle screens) */
 static void drawStatusBadge() {
     const bool wOk = (WiFi.status() == WL_CONNECTED);
     const bool mOk = mqttConnected();
@@ -55,10 +41,9 @@ static void drawStatusBadge() {
     setMainFont();
 }
 
-// ================================================================
-//  Init
-// ================================================================
 void displayInit() {
+    // Init without mutex (called once before tasks start). All subsequent
+    // drawing goes through display*() which already lock the I2C bus.
     u8g2.begin();
     u8g2.clearBuffer();
     setMainFont();
@@ -66,12 +51,10 @@ void displayInit() {
     Serial.println(F("[OLED] Display init OK"));
 }
 
-// ================================================================
-//  Generic centred text (up to 4 lines, 14 px spacing)
-// ================================================================
 void displayCentered(const char* l1, const char* l2,
                      const char* l3, const char* l4)
 {
+    i2cLock();
     u8g2.clearBuffer();
     setMainFont();
     const char* lines[] = {l1, l2, l3, l4};
@@ -84,26 +67,14 @@ void displayCentered(const char* l1, const char* l2,
         u8g2.drawStr((128 - w) / 2, startY + i * 14, lines[i]);
     }
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_IDLE
-//  Shows WiFi+MQTT status badge, mission info if any, and hints.
-//
-//  No mission:                Mission ready:
-//  ┌────────────────────────┐ ┌────────────────────────┐
-//  │   --- STANDBY ---  W+M+│ │   MISSION READY    W+M+│
-//  │────────────────────────│ │────────────────────────│
-//  │    Waiting for         │ │ Patient: John           │
-//  │    Order...            │ │ Bed: B-03               │
-//  │────────────────────────│ │────────────────────────│
-//  │ [1x]Follow [Lng]WiFi   │ │ [1x]Start [2x]Follow   │
-//  └────────────────────────┘ └────────────────────────┘
-// ================================================================
 void displayIdle() {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=IDLE\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     setMainFont();
 
@@ -129,23 +100,14 @@ void displayIdle() {
     }
 
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_OUTBOUND
-//  ┌────────────────────────┐
-//  │      DELIVERING...     │
-//  │────────────────────────│
-//  │ To: John               │
-//  │ Next: NODE_B           │
-//  │────────────────────────│
-//  │ [1x]Cancel  [2x]Abort  │
-//  └────────────────────────┘
-// ================================================================
 void displayOutbound(const char* patient, const char* nextNode) {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=OUTBOUND\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("DELIVERING...");
     char buf[22];
@@ -155,15 +117,14 @@ void displayOutbound(const char* patient, const char* nextNode) {
     u8g2.drawStr(2, 50, buf);
     drawHint("[1x]Cancel  [2x]Abort");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_OBSTACLE
-// ================================================================
 void displayObstacle() {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=OBSTACLE\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("!! WARNING !!");
     const char* b1 = "Object Detected!";
@@ -171,23 +132,14 @@ void displayObstacle() {
     u8g2.drawStr((128 - u8g2.getStrWidth(b1)) / 2, 36, b1);
     u8g2.drawStr((128 - u8g2.getStrWidth(b2)) / 2, 50, b2);
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_WAIT_AT_DEST
-//  ┌────────────────────────┐
-//  │        ARRIVED!        │
-//  │────────────────────────│
-//  │  Please take items     │
-//  │  Press SW to Return    │
-//  │────────────────────────│
-//  │ [1x]Return [2x]Abort   │
-//  └────────────────────────┘
-// ================================================================
 void displayWaitAtDest() {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=WAIT_AT_DEST\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("ARRIVED!");
     const char* b1 = "Please take items";
@@ -196,23 +148,14 @@ void displayWaitAtDest() {
     u8g2.drawStr((128 - u8g2.getStrWidth(b2)) / 2, 50, b2);
     drawHint("[1x]Return  [2x]Abort");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_FOLLOW  (after face auth)
-//  ┌────────────────────────┐
-//  │      FOLLOWING...      │
-//  │────────────────────────│
-//  │ Target: Locked         │
-//  │ Dist:   45 cm          │
-//  │────────────────────────│
-//  │ [1x]Stop  [2x]Recover  │
-//  └────────────────────────┘
-// ================================================================
 void displayFollow(const char* targetLabel, uint16_t distCm) {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=FOLLOW\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("FOLLOWING...");
     char buf[22];
@@ -222,23 +165,14 @@ void displayFollow(const char* targetLabel, uint16_t distCm) {
     u8g2.drawStr(2, 50, buf);
     drawHint("[1x]Stop  [2x]Recover");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_FOLLOW  (face-auth phase)
-//  ┌────────────────────────┐
-//  │      FACE VERIFY       │
-//  │────────────────────────│
-//  │ Step: Align Face       │
-//  │ Match: 2 / 3           │
-//  │────────────────────────│
-//  │ [1x]Cancel             │
-//  └────────────────────────┘
-// ================================================================
 void displayFaceAuth(const char* phase, uint8_t streak, uint8_t needed) {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=FaceAuth\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("FACE VERIFY");
     char line1[24], line2[24];
@@ -248,23 +182,14 @@ void displayFaceAuth(const char* phase, uint8_t streak, uint8_t needed) {
     u8g2.drawStr(2, 50, line2);
     drawHint("[1x]Cancel");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_RECOVERY_VIS / BLIND / CALL
-//  ┌────────────────────────┐
-//  │      RECOVERING...     │
-//  │────────────────────────│
-//  │   Searching Line...    │
-//  │        Step: 1/3       │
-//  │────────────────────────│
-//  │ [1x]Stop               │
-//  └────────────────────────┘
-// ================================================================
 void displayRecovery(uint8_t step) {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=RECOVERY step=%u\n", millis(), (unsigned)step);
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("RECOVERING...");
     const char* stepStr = "???";
@@ -277,23 +202,14 @@ void displayRecovery(uint8_t step) {
     u8g2.drawStr((128 - u8g2.getStrWidth(buf)) / 2, 50, buf);
     drawHint("[1x]Cancel  [2x]Abort");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  ST_BACK
-//  ┌────────────────────────┐
-//  │      RETURNING...      │
-//  │────────────────────────│
-//  │ Next: NODE_C           │
-//  │                        │
-//  │────────────────────────│
-//  │ [1x]Cancel             │
-//  └────────────────────────┘
-// ================================================================
 void displayBack(const char* nextNode) {
 #if MONITOR_SERIAL
     Serial.printf("[MON] t=%lu OLED=BACK\n", millis());
 #endif
+    i2cLock();
     u8g2.clearBuffer();
     drawHeader("RETURNING...");
     char buf[22];
@@ -301,11 +217,9 @@ void displayBack(const char* nextNode) {
     u8g2.drawStr(2, 36, buf);
     drawHint("[1x]Cancel  [2x]Abort");
     u8g2.sendBuffer();
+    i2cUnlock();
 }
 
-// ================================================================
-//  WiFi setup screens
-// ================================================================
 void displayWiFiSetup() {
     displayCentered("WIFI SETUP",
                     "SSID: " WIFI_PORTAL_SSID,
@@ -336,10 +250,8 @@ void displayConnected(const char* ip) {
     displayCentered("WiFi OK", buf, mqttBuf);
 }
 
-// ================================================================
-//  Boot checklist
-// ================================================================
 void displayBootChecklist(bool wifiOk, bool mqttOk, bool slaveOk, uint16_t stableLeftMs) {
+    i2cLock();
     u8g2.clearBuffer();
     setMainFont();
 
@@ -362,4 +274,5 @@ void displayBootChecklist(bool wifiOk, bool mqttOk, bool slaveOk, uint16_t stabl
     }
 
     u8g2.sendBuffer();
+    i2cUnlock();
 }

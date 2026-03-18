@@ -13,7 +13,7 @@ const prescriptionSchema = new mongoose.Schema({
   instructions: { type: String, trim: true },
   prescribedBy: { type: String, trim: true },
 
-  status: { type: String, default: 'Active', trim: true } // Active | Stopped | Completed
+  status: { type: String, default: 'Active', trim: true }
 }, { timestamps: true });
 
 export default mongoose.model('Prescription', prescriptionSchema);

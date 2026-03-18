@@ -1,4 +1,4 @@
-export type RobotType = 'Biped' | 'Carry';
+export type RobotType = 'Carry';
 export type RobotStatus = 'Idle' | 'Moving' | 'At Destination' | 'Task in Progress' | 'Error';
 
 export interface Robot {

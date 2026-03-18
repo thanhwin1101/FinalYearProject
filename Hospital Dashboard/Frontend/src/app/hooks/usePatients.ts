@@ -1,17 +1,16 @@
 import { useState, useEffect, useCallback } from 'react';
-import { 
-  getPatients, 
-  createPatientWithPhoto, 
-  updatePatientWithPhoto, 
+import {
+  getPatients,
+  createPatientWithPhoto,
+  updatePatientWithPhoto,
   deletePatient as apiDeletePatient,
   BackendPatient,
   CreatePatientData
 } from '@/app/api/patients';
 import { Patient, MedicationEntry } from '@/app/types/patient';
 
-// Convert backend patient to frontend patient format
 function toFrontendPatient(bp: BackendPatient): Patient {
-  // Convert prescriptions to medicationLog format
+
   const medicationLog: MedicationEntry[] = (bp.prescriptions || []).map((p, idx) => ({
     id: p._id || `med-${idx}`,
     name: p.medication || '',
@@ -23,7 +22,6 @@ function toFrontendPatient(bp: BackendPatient): Patient {
     notes: p.instructions
   }));
 
-  // Convert notes array to string for display
   const notesText = (bp.notes || []).map(n => {
     const date = n.createdAt ? new Date(n.createdAt).toLocaleDateString() : '';
     const by = n.createdBy ? ` - ${n.createdBy}` : '';
@@ -53,7 +51,6 @@ function toFrontendPatient(bp: BackendPatient): Patient {
   };
 }
 
-// Convert frontend patient to backend format
 function toBackendPatientData(patient: Partial<Patient>): CreatePatientData {
   return {
     mrn: patient.mrn || '',
@@ -78,7 +75,6 @@ export function usePatients() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch all patients
   const fetchPatients = useCallback(async () => {
     try {
       setLoading(true);
@@ -94,12 +90,10 @@ export function usePatients() {
     }
   }, []);
 
-  // Initial fetch
   useEffect(() => {
     fetchPatients();
   }, [fetchPatients]);
 
-  // Add new patient
   const addPatient = useCallback(async (patient: Patient, photoFile?: File) => {
     try {
       setError(null);
@@ -116,7 +110,6 @@ export function usePatients() {
     }
   }, []);
 
-  // Update existing patient
   const updatePatient = useCallback(async (patient: Patient, photoFile?: File) => {
     try {
       setError(null);
@@ -133,7 +126,6 @@ export function usePatients() {
     }
   }, []);
 
-  // Delete patient
   const deletePatient = useCallback(async (id: string) => {
     try {
       setError(null);
@@ -147,7 +139,6 @@ export function usePatients() {
     }
   }, []);
 
-  // Refresh data
   const refresh = useCallback(() => {
     fetchPatients();
   }, [fetchPatients]);

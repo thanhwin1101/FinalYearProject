@@ -1,5 +1,3 @@
-/*  route_manager.cpp  –  Route storage, parsing, UID lookup
- */
 #include "route_manager.h"
 #include "config.h"
 #include "globals.h"
@@ -17,28 +15,25 @@ uint8_t    retRouteIdx  = 0;
 
 bool cancelPending = false;
 
-/* ================================================================
- *  UID lookup table  –  37 active checkpoints (colon-separated UID format)
- * ================================================================ */
 static const UidEntry UID_MAP[] = {
     {"MED",   "45:54:80:83"},
     {"H_MED", "45:D3:91:83"},
     {"H_BOT", "45:79:31:83"},
     {"H_TOP", "45:86:AC:83"},
     {"J4",    "35:2C:3C:83"},
-    // Room 1
+
     {"R1M1",  "35:FD:E1:83"},  {"R1M2",  "45:AB:49:83"},  {"R1M3", "35:2E:CA:83"},
     {"R1O1",  "45:0E:9D:83"},  {"R1O2",  "35:58:97:83"},  {"R1O3", "35:F0:F8:83"},
     {"R1D1",  "35:F6:EF:83"},  {"R1D2",  "45:C7:37:83"},
-    // Room 2
+
     {"R2M1",  "35:1A:34:83"},  {"R2M2",  "45:BF:F6:83"},  {"R2M3", "35:DC:8F:83"},
     {"R2O1",  "45:35:C3:83"},  {"R2O2",  "45:27:34:83"},  {"R2O3", "35:2A:2D:83"},
     {"R2D1",  "35:4C:B8:83"},  {"R2D2",  "45:81:A4:83"},
-    // Room 3
+
     {"R3M1",  "35:22:F5:83"},  {"R3M2",  "45:C2:B8:83"},  {"R3M3", "35:BB:B1:83"},
     {"R3O1",  "45:26:F3:83"},  {"R3O2",  "45:1D:A4:83"},  {"R3O3", "35:1E:47:83"},
     {"R3D1",  "35:45:AF:83"},  {"R3D2",  "35:35:BA:83"},
-    // Room 4
+
     {"R4M1",  "45:83:FB:83"},  {"R4M2",  "45:8E:00:83"},  {"R4M3", "35:4D:9B:83"},
     {"R4O1",  "45:7D:5A:83"},  {"R4O2",  "35:DB:EA:83"},  {"R4O3", "35:EB:18:83"},
     {"R4D1",  "35:48:9F:83"},  {"R4D2",  "35:26:79:83"},
@@ -56,10 +51,6 @@ const UidEntry* uidLookupByNode(const char* nodeId) {
         if (strcasecmp(UID_MAP[i].nodeId, nodeId) == 0) return &UID_MAP[i];
     return nullptr;
 }
-
-/* ================================================================
- *  Route helpers
- * ================================================================ */
 
 void routeClear() {
     outRouteLen = outRouteIdx = 0;
@@ -92,9 +83,7 @@ static String normalizeTextField(const String& in) {
 }
 
 void routeParseAssign(const JsonDocument &doc) {
-    // Accept both payload styles:
-    // 1) Flat: { missionId, patientName, destBed, outboundRoute, returnRoute }
-    // 2) Nested: { mission: { missionId, patientName, bedId|destBed, outboundRoute, returnRoute } }
+
     JsonVariantConst root = doc.as<JsonVariantConst>();
     if (doc.containsKey("mission") && doc["mission"].is<JsonObjectConst>()) {
         root = doc["mission"].as<JsonVariantConst>();
@@ -127,7 +116,6 @@ void routeParseAssign(const JsonDocument &doc) {
 
     displayIdle();
 
-    // Transition to OUTBOUND is handled by state_machine after SW + MED scan
 }
 
 void routeParseReturn(const JsonDocument &doc) {
@@ -184,13 +172,12 @@ char upcomingTurnAction() {
     return 'F';
 }
 
-/* ── Build reverse return from visited outbound ── */
 void routeBuildReverseReturn() {
     retRouteLen = 0;
-    uint8_t visited = outRouteIdx + 1;  // nodes visited so far
+    uint8_t visited = outRouteIdx + 1;
     for (int i = visited - 1; i >= 0 && retRouteLen < MAX_ROUTE_LEN; i--) {
         retRoute[retRouteLen] = outRoute[i];
-        // Invert turns
+
         if (retRoute[retRouteLen].action == 'L')      retRoute[retRouteLen].action = 'R';
         else if (retRoute[retRouteLen].action == 'R')  retRoute[retRouteLen].action = 'L';
         retRouteLen++;

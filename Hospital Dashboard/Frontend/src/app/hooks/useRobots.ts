@@ -1,21 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { 
-  getCarryRobotsStatus, 
-  getBipedRobotsStatus,
+import {
+  getCarryRobotsStatus,
   CarryStatusResponse,
-  BipedStatusResponse,
   CarryRobotStatus,
-  BackendRobot
 } from '@/app/api/robots';
-import { 
-  getMissions, 
+import {
+  getMissions,
   cancelMission as apiCancelMission,
   cancelDeliveryMission as apiCancelDeliveryMission,
-  TransportMission 
+  TransportMission
 } from '@/app/api/missions';
 import { Robot, RobotStatus } from '@/app/types/robot';
 
-// Map backend status to frontend status
 function mapStatus(backendStatus: string): RobotStatus {
   const statusMap: Record<string, RobotStatus> = {
     'idle': 'Idle',
@@ -28,7 +24,6 @@ function mapStatus(backendStatus: string): RobotStatus {
   return statusMap[backendStatus] || 'Idle';
 }
 
-// Convert backend carry robot to frontend format
 function carryRobotToFrontend(robot: CarryRobotStatus): Robot {
   return {
     id: robot.robotId,
@@ -48,52 +43,28 @@ export function useRobots(pollInterval: number = 5000) {
   const [robots, setRobots] = useState<Robot[]>([]);
   const [missions, setMissions] = useState<TransportMission[]>([]);
   const [carryStatus, setCarryStatus] = useState<CarryStatusResponse | null>(null);
-  const [bipedStatus, setBipedStatus] = useState<BipedStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Fetch robot data
   const fetchRobots = useCallback(async () => {
     try {
       setError(null);
-      
-      const [carryData, bipedData, missionsData] = await Promise.all([
+
+      const [carryData, missionsData] = await Promise.all([
         getCarryRobotsStatus().catch(() => null),
-        getBipedRobotsStatus().catch(() => null),
         getMissions({ limit: 50 }).catch(() => []),
       ]);
 
       if (carryData) {
         setCarryStatus(carryData);
       }
-      if (bipedData) {
-        setBipedStatus(bipedData);
-      }
       setMissions(missionsData);
 
-      // Combine robots
       const allRobots: Robot[] = [];
-      
-      // Add carry robots
+
       if (carryData?.robots) {
         allRobots.push(...carryData.robots.map(carryRobotToFrontend));
-      }
-
-      // Add biped robots (if any)
-      if (bipedData?.robots) {
-        bipedData.robots.forEach((robot: BackendRobot) => {
-          allRobots.push({
-            id: robot.robotId,
-            type: 'Biped',
-            name: robot.name || `Biped-${robot.robotId}`,
-            currentLocation: robot.currentLocation?.room || 'Unknown',
-            destination: '',
-            status: mapStatus(robot.status),
-            batteryLevel: robot.batteryLevel || 0,
-            lastUpdated: robot.lastSeenAt || new Date().toISOString(),
-          });
-        });
       }
 
       setRobots(allRobots);
@@ -106,11 +77,9 @@ export function useRobots(pollInterval: number = 5000) {
     }
   }, []);
 
-  // Initial fetch and polling
   useEffect(() => {
     fetchRobots();
 
-    // Set up polling
     if (pollInterval > 0) {
       pollRef.current = setInterval(fetchRobots, pollInterval);
     }
@@ -122,28 +91,26 @@ export function useRobots(pollInterval: number = 5000) {
     };
   }, [fetchRobots, pollInterval]);
 
-  // Cancel robot task/mission
   const cancelTask = useCallback(async (robotId: string) => {
     try {
       setError(null);
-      
-      // Find active mission for this robot
+
       const activeMission = missions.find(
-        m => m.carryRobotId === robotId && 
+        m => m.carryRobotId === robotId &&
         ['pending', 'en_route', 'arrived'].includes(m.status)
       );
 
       if (activeMission) {
-        // Try the new delivery mission cancel API first
+
         try {
           await apiCancelDeliveryMission(activeMission.missionId, 'web');
         } catch {
-          // Fallback to old cancel API
+
           await apiCancelMission(activeMission.missionId);
         }
-        await fetchRobots(); // Refresh data
+        await fetchRobots();
       } else {
-        // Update local state
+
         setRobots(prev => prev.map(robot =>
           robot.id === robotId
             ? { ...robot, status: 'Idle', destination: '', taskDescription: undefined }
@@ -158,7 +125,6 @@ export function useRobots(pollInterval: number = 5000) {
     }
   }, [missions, fetchRobots]);
 
-  // Manual refresh
   const refresh = useCallback(() => {
     setLoading(true);
     fetchRobots();
@@ -168,7 +134,6 @@ export function useRobots(pollInterval: number = 5000) {
     robots,
     missions,
     carryStatus,
-    bipedStatus,
     loading,
     error,
     cancelTask,

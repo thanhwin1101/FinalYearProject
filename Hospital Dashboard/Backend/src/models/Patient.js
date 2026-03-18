@@ -15,7 +15,7 @@ const prescriptionSchema = new mongoose.Schema({
   endDate: { type: String },
   prescribedBy: { type: String },
   instructions: { type: String },
-  status: { type: String, default: 'Active' } // Active | Stopped | Completed
+  status: { type: String, default: 'Active' }
 }, { _id: true });
 
 const noteSchema = new mongoose.Schema({
@@ -31,7 +31,7 @@ const patientSchema = new mongoose.Schema({
   dob: { type: String },
   gender: { type: String },
 
-  admissionDate: { type: String, required: true }, // YYYY-MM-DD
+  admissionDate: { type: String, required: true },
   status: { type: String, required: true },
 
   department: { type: String },
@@ -45,9 +45,8 @@ const patientSchema = new mongoose.Schema({
   relativePhone: { type: String, required: true },
   insurancePolicyId: { type: String },
 
-  // ✅ 2 field quan trọng để xử lý xóa file
-  photoPath: { type: String }, // ví dụ: uploads/patients/xxx.jpg
-  photoUrl: { type: String },  // ví dụ: /uploads/patients/xxx.jpg
+  photoPath: { type: String },
+  photoUrl: { type: String },
 
   timeline: { type: [timelineSchema], default: [] },
   prescriptions: { type: [prescriptionSchema], default: [] },

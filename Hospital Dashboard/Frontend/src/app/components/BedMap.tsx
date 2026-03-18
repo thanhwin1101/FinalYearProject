@@ -31,15 +31,13 @@ export function BedMap({ patients, robots, onBedClick, selectedBedId }: BedMapPr
     const mBeds = beds.filter(b => b.includes('M'));
     const oBeds = beds.filter(b => b.includes('O'));
 
-    // Room 1 & 3: O beds on left, M beds on right
-    // Room 2 & 4: M beds on left, O beds on right
     const leftBeds = (roomNumber === 1 || roomNumber === 3) ? oBeds : mBeds;
     const rightBeds = (roomNumber === 1 || roomNumber === 3) ? mBeds : oBeds;
 
     return (
       <div className="border-2 border-gray-300 rounded-lg p-3 bg-white relative">
         <div className="grid grid-cols-2 gap-3">
-          {/* Left column */}
+          {}
           <div className="space-y-2">
             {leftBeds.map(bedId => {
               const bedInfo = getBedInfo(bedId);
@@ -54,7 +52,7 @@ export function BedMap({ patients, robots, onBedClick, selectedBedId }: BedMapPr
             })}
           </div>
 
-          {/* Right column */}
+          {}
           <div className="space-y-2">
             {rightBeds.map(bedId => {
               const bedInfo = getBedInfo(bedId);
@@ -78,24 +76,24 @@ export function BedMap({ patients, robots, onBedClick, selectedBedId }: BedMapPr
 
   return (
     <div className="space-y-4">
-      {/* Floor Layout */}
+      {}
       <div className="grid grid-cols-2 gap-4">
-        {/* Room 1 */}
+        {}
         {renderRoom(1, ['R1O1', 'R1O2', 'R1O3', 'R1M1', 'R1M2', 'R1M3'])}
 
-        {/* Room 2 */}
+        {}
         {renderRoom(2, ['R2O1', 'R2O2', 'R2O3', 'R2M1', 'R2M2', 'R2M3'])}
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        {/* Room 3 */}
+        {}
         {renderRoom(3, ['R3O1', 'R3O2', 'R3O3', 'R3M1', 'R3M2', 'R3M3'])}
 
-        {/* Room 4 */}
+        {}
         {renderRoom(4, ['R4O1', 'R4O2', 'R4O3', 'R4M1', 'R4M2', 'R4M3'])}
       </div>
 
-      {/* Legend */}
+      {}
       <div className="flex gap-4 justify-center text-xs text-gray-900">
         <div className="flex items-center gap-2">
           <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
@@ -114,8 +112,8 @@ export function BedMap({ patients, robots, onBedClick, selectedBedId }: BedMapPr
   );
 }
 
-function BedCell({ bedInfo, onClick, isSelected }: { 
-  bedInfo: BedInfo; 
+function BedCell({ bedInfo, onClick, isSelected }: {
+  bedInfo: BedInfo;
   onClick: () => void;
   isSelected: boolean;
 }) {

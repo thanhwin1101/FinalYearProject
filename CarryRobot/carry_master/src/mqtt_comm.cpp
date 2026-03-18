@@ -1,5 +1,3 @@
-/*  mqtt_comm.cpp  –  MQTT over WiFi for backend communication
- */
 #include "mqtt_comm.h"
 #include "config.h"
 #include "globals.h"
@@ -50,12 +48,10 @@ static const char* currentBrokerHost() {
     return brokerCandidates[brokerIdx % 3];
 }
 
-/* ─── Topic helpers ─── */
 static String topicOf(const char* suffix) {
     return String("hospital/robots/") + ROBOT_ID + "/" + suffix;
 }
 
-/* ─── Incoming message callback ─── */
 static void mqttCallback(char* topic, byte* payload, unsigned int len) {
     StaticJsonDocument<MQTT_BUFFER_SIZE> doc;
     DeserializationError err = deserializeJson(doc, payload, len);
@@ -67,15 +63,13 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
 
     String t(topic);
 
-    // ── mission/assign ──
     if (t.endsWith("/mission/assign")) {
         if (robotState != ST_IDLE) return;
         routeParseAssign(doc);
-        missionDelegateSendRoutesOnly();  // send routes only; start on SW+MED
+        missionDelegateSendRoutesOnly();
         return;
     }
 
-    // ── mission/cancel ──
     if (t.endsWith("/mission/cancel")) {
         const char* mid = doc["missionId"];
         if (!mid && doc.containsKey("mission") && doc["mission"].is<JsonObjectConst>()) {
@@ -98,18 +92,15 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
         return;
     }
 
-    // ── mission/return_route ──
     if (t.endsWith("/mission/return_route")) {
         routeParseReturn(doc);
         return;
     }
 
-    // ── command ──
     if (t.endsWith("/command")) {
         const char* cmd = doc["command"];
         if (!cmd) return;
 
-        // Remote stop / resume (obstacle hold)
         if (strcmp(cmd, "stop") == 0) {
             obstacleHold = true;
             return;
@@ -119,11 +110,6 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
             return;
         }
 
-        // Remote mode switching:
-        //   {"command":"set_mode","mode":"follow"}
-        //   {"command":"set_mode","mode":"idle"}
-        //   {"command":"follow"}  (shorthand)
-        //   {"command":"idle"}    (shorthand)
         if (strcmp(cmd, "set_mode") == 0) {
             const char* mode = doc["mode"];
             smOnMqttCommand(cmd, mode);
@@ -138,7 +124,6 @@ static void mqttCallback(char* topic, byte* payload, unsigned int len) {
     }
 }
 
-/* ─── Init ─── */
 void mqttInit() {
     mqtt.setServer(mqttServerHost, MQTT_DEFAULT_PORT);
     mqtt.setCallback(mqttCallback);
@@ -146,7 +131,6 @@ void mqttInit() {
     Serial.println(F("[MQTT] Initialised"));
 }
 
-/* ─── Reconnect + subscribe ─── */
 static void mqttReconnect() {
     if (mqtt.connected()) return;
     if (millis() - lastReconnectMs < MQTT_RECONNECT_MS) return;
@@ -181,15 +165,12 @@ static void mqttReconnect() {
     }
 }
 
-/* ─── Loop ─── */
 void mqttLoop() {
     if (!mqtt.connected()) mqttReconnect();
     mqtt.loop();
 }
 
 bool mqttConnected() { return mqtt.connected(); }
-
-/* ─── Publish helpers ─── */
 
 void mqttSendTelemetry(const char* state, const char* nodeId, const char* dest) {
     StaticJsonDocument<512> doc;

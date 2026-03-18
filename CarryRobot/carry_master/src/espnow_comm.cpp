@@ -1,5 +1,3 @@
-/*  espnow_comm.cpp  –  ESP-NOW master: send commands, receive sensor data
- */
 #include "espnow_comm.h"
 #include "config.h"
 #include "globals.h"
@@ -16,7 +14,6 @@ static void addOrRefreshSlavePeer() {
         esp_now_del_peer(SLAVE_MAC);
     }
 
-    // Use current WiFi channel when connected (so we match the AP); else fixed channel 7 for pre-WiFi link.
     uint8_t ch = ESPNOW_CHANNEL;
     if (WiFi.status() == WL_CONNECTED) {
         ch = (uint8_t)WiFi.channel();
@@ -34,10 +31,8 @@ static void addOrRefreshSlavePeer() {
     }
 }
 
-/* ─── Callbacks ─── */
-
 static void onSent(const uint8_t *mac, esp_now_send_status_t status) {
-    // (optional) track delivery rate
+
 }
 
 static void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
@@ -52,7 +47,6 @@ static void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
     }
 }
 
-/* ─── Init ─── */
 void espnowMasterInit() {
     const esp_err_t initRc = esp_now_init();
     if (initRc != ESP_OK && initRc != ESP_ERR_ESPNOW_EXIST) {
@@ -66,7 +60,6 @@ void espnowMasterInit() {
     Serial.println(F("[ESPNOW] Peer added/refreshed"));
 }
 
-/* ─── Send ─── */
 void espnowSendToSlave(const MasterToSlaveMsg &msg) {
     esp_now_send(SLAVE_MAC, (const uint8_t*)&msg, sizeof(msg));
 }

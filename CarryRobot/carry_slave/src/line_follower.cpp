@@ -1,13 +1,3 @@
-/*  line_follower.cpp  –  3-sensor line follower with PID
- *
- *  Sensor layout (viewed from front):
- *    S1(left)  S2(centre)  S3(right)
- *
- *  Weighted error: Σ(weight × sensor) / Σ(sensor)
- *  Weights:  -2000, 0, +2000
- *  If line is to the left  → error negative → need to turn left
- *  If line is to the right → error positive → need to turn right
- */
 #include "line_follower.h"
 #include "config.h"
 
@@ -18,7 +8,6 @@ static bool     sensorVal[3];
 static uint8_t  bits = 0;
 static int16_t  error = 0;
 
-// PID state
 static float integral = 0;
 static float prevErr  = 0;
 
@@ -33,9 +22,9 @@ static void readSensors() {
     bits = 0;
     for (int i = 0; i < 3; i++) {
         bool raw = digitalRead(pins[i]);
-        // If LINE_INVERT: LOW = line detected
+
         sensorVal[i] = LINE_INVERT ? !raw : raw;
-        if (sensorVal[i]) bits |= (1 << (2 - i));   // bit 2 = left, bit 1 = centre, bit 0 = right
+        if (sensorVal[i]) bits |= (1 << (2 - i));
     }
 }
 
@@ -49,7 +38,7 @@ static void computeError() {
         }
     }
     if (den == 0) {
-        // No line seen – keep last error (helps stay on side the line was lost)
+
         return;
     }
     error = (int16_t)(num / den);
@@ -76,7 +65,7 @@ float lineUpdate(float dt) {
 uint8_t lineGetBits()   { return bits; }
 int16_t lineGetError()  { return error; }
 bool    lineDetected()  { return bits != 0; }
-bool    lineCentred()   { return sensorVal[2]; }    // centre sensor
+bool    lineCentred()   { return sensorVal[2]; }
 
 void lineResetPID() {
     integral = 0;

@@ -28,11 +28,9 @@ interface RFIDProviderProps {
 export function RFIDProvider({ children }: RFIDProviderProps) {
   const [showPrompt, setShowPrompt] = useState(false);
   const [hasAttemptedConnect, setHasAttemptedConnect] = useState(false);
-  
-  // Use ref to store callbacks so handleCardRead always has latest callbacks
+
   const cardReadCallbacksRef = useRef<Set<(uid: string) => void>>(new Set());
 
-  // Callback when card is read - notify all subscribers
   const handleCardRead = useCallback((uid: string) => {
     console.log('[RFIDContext] Card read:', uid, 'Callbacks:', cardReadCallbacksRef.current.size);
     cardReadCallbacksRef.current.forEach(callback => {
@@ -52,10 +50,9 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
     onCardRead: handleCardRead
   });
 
-  // Show connection prompt on mount (only if supported and not connected)
   useEffect(() => {
     if (isSupported && !hasAttemptedConnect && status === 'disconnected') {
-      // Small delay to let the page render first
+
       const timer = setTimeout(() => {
         setShowPrompt(true);
       }, 500);
@@ -63,31 +60,27 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
     }
   }, [isSupported, hasAttemptedConnect, status]);
 
-  // Handle connect button click
   const handleConnect = async () => {
     setHasAttemptedConnect(true);
     setShowPrompt(false);
     await connect();
   };
 
-  // Handle dismiss
   const handleDismiss = () => {
     setHasAttemptedConnect(true);
     setShowPrompt(false);
   };
 
-  // Subscribe to card read events using ref
   const onCardRead = useCallback((callback: (uid: string) => void) => {
     console.log('[RFIDContext] Subscribing callback');
     cardReadCallbacksRef.current.add(callback);
-    // Return unsubscribe function
+
     return () => {
       console.log('[RFIDContext] Unsubscribing callback');
       cardReadCallbacksRef.current.delete(callback);
     };
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (status === 'connected') {
@@ -99,8 +92,8 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
   return (
     <RFIDContext.Provider value={{ status, lastUID, isSupported, error, onCardRead }}>
       {children}
-      
-      {/* Connection Prompt Modal */}
+
+      {}
       {showPrompt && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]">
           <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 max-w-md mx-4 animate-in fade-in zoom-in duration-200">
@@ -121,7 +114,7 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
                 <X className="w-5 h-5" />
               </button>
             </div>
-            
+
             <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 mb-4">
               <p className="text-sm text-gray-600 dark:text-gray-300">
                 📌 <strong>Instructions:</strong>
@@ -153,12 +146,12 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
         </div>
       )}
 
-      {/* Connection Status Indicator (bottom right corner) */}
+      {}
       {status !== 'disconnected' && (
         <div className="fixed bottom-4 right-4 z-50">
           <div className={`flex items-center gap-2 px-3 py-2 rounded-full shadow-lg text-sm font-medium ${
-            status === 'connected' 
-              ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300' 
+            status === 'connected'
+              ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
               : status === 'connecting'
               ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300'
               : 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300'

@@ -1,4 +1,3 @@
-// CHECKPOINT_UID (37 điểm)
 export const CHECKPOINT_UID = {
   R1M1: "35:FD:E1:83",
   R1M2: "45:AB:49:83",

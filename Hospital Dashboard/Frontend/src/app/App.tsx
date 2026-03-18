@@ -17,32 +17,31 @@ type Module = 'patients' | 'robot';
 export default function App() {
   const [currentModule, setCurrentModule] = useState<Module>('patients');
   const [selectedPatientForDetails, setSelectedPatientForDetails] = useState<Patient | null>(null);
-  
-  // Use API hooks for data fetching
-  const { 
-    patients, 
-    loading: patientsLoading, 
+
+  const {
+    patients,
+    loading: patientsLoading,
     error: patientsError,
     addPatient,
     updatePatient,
     deletePatient,
-    refresh: refreshPatients 
+    refresh: refreshPatients
   } = usePatients();
-  
-  const { 
-    robots, 
-    loading: robotsLoading, 
+
+  const {
+    robots,
+    loading: robotsLoading,
     error: robotsError,
     cancelTask,
-    refresh: refreshRobots 
-  } = useRobots(5000); // Poll every 5 seconds
-  
-  const { 
-    alerts, 
+    refresh: refreshRobots
+  } = useRobots(5000);
+
+  const {
+    alerts,
     alertCounts,
     resolveAlert,
-    refresh: refreshAlerts 
-  } = useAlerts(10000); // Poll every 10 seconds
+    refresh: refreshAlerts
+  } = useAlerts(10000);
 
   const {
     createDeliveryMission,
@@ -82,21 +81,19 @@ export default function App() {
   };
 
   const handleSendRobot = async (patientId: string): Promise<{ missionId: string; robotId: string } | null> => {
-    // Find the patient to get the bed location
+
     const patient = patients.find(p => p.id === patientId);
     if (!patient) {
       console.error('Patient not found:', patientId);
       return null;
     }
 
-    // Check if patient has a bed assigned
     if (!patient.roomBedId) {
       console.error('Patient has no bed assigned:', patient.fullName);
       alert('Patient has no bed assigned!');
       return null;
     }
 
-    // Check if there's an available Carry robot
     const availableRobot = robots.find(r => r.type === 'Carry' && r.status === 'Idle');
     if (!availableRobot) {
       console.error('No idle Carry robot available');
@@ -106,20 +103,18 @@ export default function App() {
 
     try {
       console.log('Sending robot to patient:', patient.fullName, 'at bed:', patient.roomBedId);
-      
-      // Call API to create delivery mission
+
       const result = await createDeliveryMission({
-        mapId: 'floor1', // Default map ID - can be made dynamic later
+        mapId: 'floor1',
         bedId: patient.roomBedId,
         patientName: patient.fullName,
       });
 
       console.log('Mission created:', result);
       alert(`Đã gửi robot ${result.carryRobotId} đến giường ${patient.roomBedId}!\nMission ID: ${result.missionId}`);
-      
-      // Refresh robots to update status
+
       refreshRobots();
-      
+
       return { missionId: result.missionId, robotId: result.carryRobotId };
     } catch (err) {
       console.error('Failed to create delivery mission:', err);
@@ -130,7 +125,7 @@ export default function App() {
   };
 
   const handleBedClick = (bedId: string, patient?: Patient) => {
-    // Only show patient details dialog when in Patients Manager view, not in Robot Center
+
     if (currentModule === 'patients' && patient) {
       setSelectedPatientForDetails(patient);
     }
@@ -148,9 +143,9 @@ export default function App() {
   return (
     <RFIDProvider>
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Sticky Header + Nav Container */}
+      {}
       <div className="sticky top-0 z-50">
-        {/* Header */}
+        {}
         <header className="bg-primary border-b shadow-sm">
           <div className="w-full px-6 py-4">
             <div className="flex items-center justify-between">
@@ -161,13 +156,13 @@ export default function App() {
                   <p className="text-base text-black opacity-80">Patient Care & Robot Navigation</p>
                 </div>
               </div>
-            
-            {/* Header Actions */}
+
+            {}
             <div className="flex items-center gap-4">
-              {/* Connection Status */}
+              {}
               <ConnectionStatus />
-              
-              {/* Alerts indicator */}
+
+              {}
               {alertCounts.total > 0 && (
                 <div className="flex items-center gap-2 bg-red-100 px-4 py-2 rounded-full">
                   <Bell className="w-5 h-5 text-red-600" />
@@ -176,8 +171,8 @@ export default function App() {
                   </span>
                 </div>
               )}
-              
-              {/* Refresh button */}
+
+              {}
               <Button
                 variant="outline"
                 size="lg"
@@ -193,7 +188,7 @@ export default function App() {
         </div>
       </header>
 
-        {/* Module Navigation */}
+        {}
         <nav className="bg-card border-b">
           <div className="w-full px-6">
             <div className="flex gap-2">
@@ -220,7 +215,7 @@ export default function App() {
         </nav>
       </div>
 
-      {/* Main Content */}
+      {}
       <main className="flex-1 w-full px-6 py-6">
         {currentModule === 'patients' ? (
           <PatientDashboard
@@ -240,7 +235,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Patient Details from Bed Map */}
+      {}
       <PatientDetails
         patient={selectedPatientForDetails}
         isOpen={!!selectedPatientForDetails}
@@ -248,7 +243,7 @@ export default function App() {
         onUpdatePatient={handleUpdatePatient}
       />
 
-      {/* Footer */}
+      {}
       <footer className="bg-white border-t py-4">
         <div className="w-full px-6">
           <p className="text-center text-base text-gray-600">

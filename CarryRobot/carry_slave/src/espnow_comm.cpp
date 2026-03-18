@@ -1,5 +1,3 @@
-/*  espnow_comm.cpp  –  ESP-NOW slave: receive commands, send sensor data
- */
 #include "espnow_comm.h"
 #include "config.h"
 #include "globals.h"
@@ -11,11 +9,11 @@
 static unsigned long s_lastMasterRxMs = 0;
 static bool s_linkLocked = false;
 static unsigned long s_lastPeerRefreshMs = 0;
-static uint8_t s_scanChannel = 1;  // cycle 1..13 when not linked to find Master's channel
+static uint8_t s_scanChannel = 1;
 static uint8_t s_currentChannel = ESPNOW_CHANNEL;
 
 static const unsigned long LINK_LOSS_TIMEOUT_MS = 1200;
-static const unsigned long RELINK_PEER_REFRESH_MS = 400;  // try next channel often when scanning
+static const unsigned long RELINK_PEER_REFRESH_MS = 400;
 static const uint8_t WIFI_CHANNEL_MIN = 1;
 static const uint8_t WIFI_CHANNEL_MAX = 13;
 
@@ -26,7 +24,7 @@ static void addOrRefreshMasterPeer() {
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, MASTER_MAC, 6);
-    peer.channel = s_currentChannel;  // same channel we're listening on
+    peer.channel = s_currentChannel;
     peer.encrypt = false;
 
     const esp_err_t addRc = esp_now_add_peer(&peer);
@@ -44,7 +42,6 @@ static void setWiFiChannel(uint8_t ch) {
     }
 }
 
-/* ─── Callbacks ─── */
 static void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
     if (memcmp(mac, MASTER_MAC, 6) != 0) {
         return;
@@ -73,16 +70,14 @@ static void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
 }
 
 static void onSent(const uint8_t *mac, esp_now_send_status_t status) {
-    // delivery tracking (optional)
+
 }
 
-/* ─── Init ─── */
 void espnowSlaveInit() {
     WiFi.mode(WIFI_STA);
-    // Keep any stored WiFi config and keep driver active for channel operations.
+
     WiFi.disconnect(false, false);
 
-    // Fixed channel mode: no scanning/hopping.
     setWiFiChannel(ESPNOW_CHANNEL);
 
     if (esp_now_init() != ESP_OK) {
@@ -92,22 +87,19 @@ void espnowSlaveInit() {
     esp_now_register_recv_cb(onRecv);
     esp_now_register_send_cb(onSent);
 
-    // Add Master as peer.
     addOrRefreshMasterPeer();
     Serial.println(F("[ESPNOW] Peer added/refreshed"));
 
     s_lastMasterRxMs = 0;
     s_linkLocked = false;
-    s_scanChannel = ESPNOW_CHANNEL;  // try 7 first (same as Master before WiFi)
-    s_lastPeerRefreshMs = millis(); // don't scan for 400ms so Master can link on 7
+    s_scanChannel = ESPNOW_CHANNEL;
+    s_lastPeerRefreshMs = millis();
 }
 
-/* ─── Send ─── */
 void espnowSendToMaster(const SlaveToMasterMsg &msg) {
     esp_now_send(MASTER_MAC, (const uint8_t*)&msg, sizeof(msg));
 }
 
-/* ─── Link maintenance: when not linked, scan channels 1–13 to find Master ─── */
 void espnowSlaveMaintainLink() {
     const unsigned long now = millis();
 
@@ -122,7 +114,7 @@ void espnowSlaveMaintainLink() {
 
     if ((now - s_lastPeerRefreshMs) >= RELINK_PEER_REFRESH_MS) {
         s_lastPeerRefreshMs = now;
-        s_scanChannel = (s_scanChannel % 13) + 1;  // 1..13
+        s_scanChannel = (s_scanChannel % 13) + 1;
         setWiFiChannel(s_scanChannel);
         addOrRefreshMasterPeer();
     }

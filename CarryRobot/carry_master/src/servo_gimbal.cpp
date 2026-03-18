@@ -1,5 +1,3 @@
-/*  servo_gimbal.cpp  –  Pan / Tilt gimbal with feedback
- */
 #include "servo_gimbal.h"
 #include "config.h"
 #include <ESP32Servo.h>
@@ -30,7 +28,6 @@ void gimbalSetY(float angleDeg) {
     srvY.write((int)angleDeg);
 }
 
-/* Read potentiometer feedback on GPIO 34 and map to degrees */
 float gimbalReadXAngle() {
     int raw = analogRead(SERVO_X_FB_PIN);
     float angle = (float)(raw - SERVO_FB_ADC_MIN) / (float)(SERVO_FB_ADC_MAX - SERVO_FB_ADC_MIN) * 180.0f;

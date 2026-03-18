@@ -13,14 +13,12 @@ const routePointSchema = new mongoose.Schema({
   kind: { type: String, default: '' },
   label: { type: String, default: '' },
 
-  // Firmware reads only this field currently
   action: {
     type: String,
     enum: ['F', 'L', 'R'],
     default: 'F'
   },
 
-  // Optional future-proof (not required by current firmware)
   actions: {
     type: [{ type: String, enum: ['F', 'L', 'R'] }],
     default: []
@@ -36,13 +34,12 @@ const transportMissionSchema = new mongoose.Schema({
 
   patientName: { type: String, default: '' },
 
-  bedId: { type: String, required: true }, // R1M1..R4O3
+  bedId: { type: String, required: true },
   destinationNodeId: { type: String },
 
   outboundRoute: { type: [routePointSchema], default: [] },
   returnRoute: { type: [routePointSchema], default: [] },
 
-  // legacy compatibility
   plannedRoute: { type: [routePointSchema], default: [] },
 
   actualRoute: {

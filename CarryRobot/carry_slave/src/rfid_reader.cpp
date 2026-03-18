@@ -1,5 +1,3 @@
-/*  rfid_reader.cpp  –  PN532 NFC tag reading via SPI
- */
 #include "rfid_reader.h"
 #include "config.h"
 #include <SPI.h>
@@ -8,7 +6,6 @@
 static Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 static bool nfcOk = false;
 
-// Repeat guard
 static char     lastUid[RFID_UID_LOCAL_LEN] = "";
 static unsigned long lastUidMs  = 0;
 
@@ -33,7 +30,6 @@ bool rfidRead(char uid[RFID_UID_LOCAL_LEN]) {
     if (!nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uidBuf, &uidLen, 50))
         return false;
 
-    // Format UID as uppercase colon-separated string, e.g. "45:D3:91:83".
     char hex[RFID_UID_LOCAL_LEN] = "";
     size_t pos = 0;
     for (uint8_t i = 0; i < uidLen && i < 7 && pos < sizeof(hex) - 1; i++) {
@@ -46,7 +42,6 @@ bool rfidRead(char uid[RFID_UID_LOCAL_LEN]) {
         pos += (size_t)written;
     }
 
-    // Repeat guard
     if (strcmp(hex, lastUid) == 0 && millis() - lastUidMs < NFC_REPEAT_GUARD_MS)
         return false;
 

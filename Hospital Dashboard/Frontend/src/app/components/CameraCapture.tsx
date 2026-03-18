@@ -19,35 +19,32 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
     try {
       setError('');
       setIsLoading(true);
-      
+
       console.log('[Camera] Starting camera...');
       console.log('[Camera] mediaDevices available:', !!navigator.mediaDevices);
       console.log('[Camera] getUserMedia available:', !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia));
-      
-      // First check if mediaDevices is available
+
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('Camera API không khả dụng. Vui lòng đảm bảo bạn đang dùng HTTPS hoặc localhost.');
       }
 
       console.log('[Camera] Requesting camera permission...');
-      
-      // Request camera permission with fallback options
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
           width: { ideal: 640 },
           height: { ideal: 480 },
-          facingMode: 'user' // Front camera for patient photos
+          facingMode: 'user'
         },
         audio: false
       });
-      
+
       console.log('[Camera] Got stream:', stream);
-      
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         streamRef.current = stream;
-        
-        // Wait for video to be ready
+
         videoRef.current.onloadedmetadata = () => {
           console.log('[Camera] Video metadata loaded, playing...');
           videoRef.current?.play().then(() => {
@@ -60,7 +57,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
             setIsLoading(false);
           });
         };
-        
+
         videoRef.current.onerror = (e) => {
           console.error('[Camera] Video error:', e);
           setError('❌ Camera video error.');
@@ -71,7 +68,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
       setIsLoading(false);
       const error = err as Error & { name?: string };
       console.error('[Camera] Error:', error.name, error.message);
-      
+
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         setError('🚫 Camera access denied. Please allow camera access in browser settings.');
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
@@ -79,7 +76,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
       } else if (error.name === 'NotReadableError' || error.name === 'TrackStartError') {
         setError('⚠️ Camera is being used by another application. Please close other apps and try again.');
       } else if (error.name === 'OverconstrainedError') {
-        // Retry with basic constraints
+
         console.log('[Camera] Retrying with basic constraints...');
         try {
           const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -101,8 +98,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
       }
     }
   };
-  
-  // Handle file upload as fallback
+
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
@@ -132,7 +128,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
       canvas.width = videoRef.current.videoWidth;
       canvas.height = videoRef.current.videoHeight;
       const ctx = canvas.getContext('2d');
-      
+
       if (ctx) {
         ctx.drawImage(videoRef.current, 0, 0);
         const imageData = canvas.toDataURL('image/jpeg', 0.8);
@@ -170,8 +166,8 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
             <p>No photo</p>
           </div>
         )}
-        
-        {/* Loading overlay */}
+
+        {}
         {isLoading && (
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
             <div className="text-white text-center">
@@ -185,7 +181,7 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
       {error && (
         <div className="text-sm p-3 bg-red-50 rounded-md border border-red-200">
           <p className="text-red-600">{error}</p>
-          <button 
+          <button
             type="button"
             onClick={startCamera}
             className="mt-2 text-blue-600 hover:underline text-xs"
@@ -212,8 +208,8 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
               )}
               {currentPhoto ? 'Retake' : 'Start Camera'}
             </Button>
-            
-            {/* File upload fallback */}
+
+            {}
             <input
               ref={fileInputRef}
               type="file"

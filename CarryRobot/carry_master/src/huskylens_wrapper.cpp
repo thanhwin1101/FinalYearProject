@@ -1,5 +1,3 @@
-/*  huskylens_wrapper.cpp  –  HuskyLens UART interface
- */
 #include "huskylens_wrapper.h"
 #include "config.h"
 #include "HUSKYLENS.h"

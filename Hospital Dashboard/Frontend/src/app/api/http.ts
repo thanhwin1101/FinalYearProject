@@ -24,11 +24,10 @@ async function handleResponse<T>(response: Response): Promise<T> {
       errorData.message || `HTTP error! status: ${response.status}`
     );
   }
-  
-  // Handle empty responses
+
   const text = await response.text();
   if (!text) return {} as T;
-  
+
   try {
     return JSON.parse(text);
   } catch {
@@ -37,14 +36,14 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 function buildUrl(endpoint: string, params?: Record<string, string | number | boolean>): string {
-  // If API_BASE_URL is empty, use relative URL (for Vite proxy)
+
   let fullUrl: string;
   if (API_BASE_URL) {
     fullUrl = new URL(endpoint, API_BASE_URL).toString();
   } else {
     fullUrl = endpoint;
   }
-  
+
   if (params) {
     const searchParams = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
@@ -57,14 +56,14 @@ function buildUrl(endpoint: string, params?: Record<string, string | number | bo
       fullUrl += (fullUrl.includes('?') ? '&' : '?') + queryString;
     }
   }
-  
+
   return fullUrl;
 }
 
 export async function get<T>(endpoint: string, options?: RequestOptions): Promise<T> {
   const { params, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'GET',
     headers: {
@@ -73,14 +72,14 @@ export async function get<T>(endpoint: string, options?: RequestOptions): Promis
     },
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
 export async function post<T>(endpoint: string, data?: unknown, options?: RequestOptions): Promise<T> {
   const { params, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -90,14 +89,14 @@ export async function post<T>(endpoint: string, data?: unknown, options?: Reques
     body: data ? JSON.stringify(data) : undefined,
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
 export async function put<T>(endpoint: string, data?: unknown, options?: RequestOptions): Promise<T> {
   const { params, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'PUT',
     headers: {
@@ -107,14 +106,14 @@ export async function put<T>(endpoint: string, data?: unknown, options?: Request
     body: data ? JSON.stringify(data) : undefined,
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
 export async function patch<T>(endpoint: string, data?: unknown, options?: RequestOptions): Promise<T> {
   const { params, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'PATCH',
     headers: {
@@ -124,14 +123,14 @@ export async function patch<T>(endpoint: string, data?: unknown, options?: Reque
     body: data ? JSON.stringify(data) : undefined,
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
 export async function del<T>(endpoint: string, options?: RequestOptions): Promise<T> {
   const { params, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'DELETE',
     headers: {
@@ -140,32 +139,31 @@ export async function del<T>(endpoint: string, options?: RequestOptions): Promis
     },
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
-// For file uploads (multipart/form-data)
 export async function upload<T>(endpoint: string, formData: FormData, options?: RequestOptions): Promise<T> {
   const { params, headers, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'POST',
-    // Don't set Content-Type header - browser will set it automatically with boundary
+
     headers: {
       ...headers,
     },
     body: formData,
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }
 
 export async function uploadPut<T>(endpoint: string, formData: FormData, options?: RequestOptions): Promise<T> {
   const { params, headers, ...fetchOptions } = options || {};
   const url = buildUrl(endpoint, params);
-  
+
   const response = await fetch(url, {
     method: 'PUT',
     headers: {
@@ -174,6 +172,6 @@ export async function uploadPut<T>(endpoint: string, formData: FormData, options
     body: formData,
     ...fetchOptions,
   });
-  
+
   return handleResponse<T>(response);
 }

@@ -1,7 +1,6 @@
 import { API_ENDPOINTS } from './config';
 import { get, post, put } from './http';
 
-// Transport Mission interfaces
 export interface TransportMission {
   _id: string;
   missionId: string;
@@ -34,7 +33,6 @@ export interface MissionPathResponse {
   path: string[];
 }
 
-// Get all transport missions
 export async function getMissions(params?: {
   status?: string;
   robotId?: string;
@@ -43,53 +41,41 @@ export async function getMissions(params?: {
   return get<TransportMission[]>(API_ENDPOINTS.missionsTransport, { params });
 }
 
-// Get mission by ID
 export async function getMissionById(id: string): Promise<TransportMission> {
   return get<TransportMission>(`${API_ENDPOINTS.missionsTransport}/${id}`);
 }
 
-// Create new transport mission
 export async function createMission(data: CreateMissionData): Promise<TransportMission> {
   return post<TransportMission>(API_ENDPOINTS.missionsTransport, data);
 }
 
-// Get mission path/commands for robot
 export async function getMissionPath(missionId: string): Promise<MissionPathResponse> {
   return get<MissionPathResponse>(`${API_ENDPOINTS.missionsTransport}/${missionId}/path`);
 }
 
-// Update mission status
 export async function updateMissionStatus(
-  missionId: string, 
+  missionId: string,
   status: 'arrived' | 'completed' | 'cancelled'
 ): Promise<TransportMission> {
   return put<TransportMission>(`${API_ENDPOINTS.missionsTransport}/${missionId}/status`, { status });
 }
 
-// Cancel mission
 export async function cancelMission(missionId: string): Promise<TransportMission> {
   return put<TransportMission>(`${API_ENDPOINTS.missionsTransport}/${missionId}/cancel`, {});
 }
 
-// Mark mission as arrived
 export async function markMissionArrived(missionId: string): Promise<TransportMission> {
   return put<TransportMission>(`${API_ENDPOINTS.missionsTransport}/${missionId}/arrived`, {});
 }
 
-// Mark mission as completed (returned)
 export async function markMissionCompleted(missionId: string): Promise<TransportMission> {
   return put<TransportMission>(`${API_ENDPOINTS.missionsTransport}/${missionId}/returned`, {});
 }
 
-// Get active mission for a robot
 export async function getActiveMissionForRobot(robotId: string): Promise<TransportMission | null> {
   const missions = await getMissions({ robotId, status: 'pending,en_route,arrived' });
   return missions.length > 0 ? missions[0] : null;
 }
-
-// ============================================================
-// Delivery Mission API (for Carry Robot)
-// ============================================================
 
 export interface DeliveryMissionRequest {
   mapId: string;
@@ -130,25 +116,19 @@ export interface CarryMissionDetails {
   }>;
 }
 
-// Create delivery mission for Carry Robot
 export async function createDeliveryMission(data: DeliveryMissionRequest): Promise<DeliveryMissionResponse> {
   return post<DeliveryMissionResponse>(API_ENDPOINTS.missionsDelivery, data);
 }
 
-// Cancel delivery mission
 export async function cancelDeliveryMission(missionId: string, cancelledBy?: string): Promise<{ ok: boolean }> {
   return post<{ ok: boolean }>(`${API_ENDPOINTS.missionsCarryCancel}/${missionId}/cancel`, {
     cancelledBy: cancelledBy || 'web'
   });
 }
 
-// Get next mission for robot (used by robot firmware)
 export async function getCarryNextMission(robotId: string): Promise<{ mission: CarryMissionDetails | null }> {
   return get<{ mission: CarryMissionDetails | null }>(`${API_ENDPOINTS.missionsCarryNext}?robotId=${robotId}`);
 }
-// ============================================================
-// Delivery History API
-// ============================================================
 
 export interface DeliveryHistoryItem {
   _id: string;
@@ -165,7 +145,7 @@ export interface DeliveryHistoryItem {
   completedAt?: string;
   cancelledAt?: string;
   returnedAt?: string;
-  duration?: number; // in minutes
+  duration?: number;
   itemCarried?: string;
   notes?: string[];
 }
@@ -180,7 +160,6 @@ export interface DeliveryHistoryResponse {
   };
 }
 
-// Get delivery history
 export async function getDeliveryHistory(params?: {
   limit?: number;
   page?: number;
@@ -198,10 +177,10 @@ export async function getDeliveryHistory(params?: {
   if (params?.status) queryParams.append('status', params.status);
   if (params?.startDate) queryParams.append('startDate', params.startDate);
   if (params?.endDate) queryParams.append('endDate', params.endDate);
-  
+
   const url = queryParams.toString()
     ? `${API_ENDPOINTS.missionsDeliveryHistory}?${queryParams.toString()}`
     : API_ENDPOINTS.missionsDeliveryHistory;
-  
+
   return get<DeliveryHistoryResponse>(url);
 }

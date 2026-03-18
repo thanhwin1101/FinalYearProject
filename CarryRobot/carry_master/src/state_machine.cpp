@@ -1,16 +1,3 @@
-/*  state_machine.cpp  –  Master state-machine implementation
- *
- *  States:
- *    ST_IDLE            – parked at MED, waiting for mission or follow-mode
- *    ST_OUTBOUND        – line-follow delivery (Slave PID + Master RFID routing)
- *    ST_WAIT_AT_DEST    – arrived at bed, waiting for SW press to return
- *    ST_BACK            – returning to MED via line-follow
- *    ST_FOLLOW          – follow-person mode (HuskyLens + cascaded PID)
- *    ST_RECOVERY_VIS    – Recovery step 1: visual docking to line
- *    ST_RECOVERY_BLIND  – Recovery step 2: blind line-follow + RFID scan
- *    ST_RECOVERY_CALL   – Recovery step 3: ask backend for route home
- *    ST_OBSTACLE        – paused due to ToF obstacle
- */
 #include "state_machine.h"
 #include "config.h"
 #include "globals.h"
@@ -25,7 +12,6 @@
 #include "mission_delegate.h"
 #include "follow_pid.h"
 
-/* ─── Forward declarations ─── */
 static void enterIdle();
 static void enterOutbound();
 static void enterMissionDelegated();
@@ -38,7 +24,6 @@ static void enterRecoveryCall();
 static void enterObstacle();
 static void exitObstacle();
 
-/* ─── Per-state update handlers ─── */
 static void updateOutbound();
 static void updateBack();
 static void updateFollow();
@@ -47,13 +32,11 @@ static void updateRecoveryBlind();
 static void updateRecoveryCall();
 static void updateObstacle();
 
-/* ─── Obstacle check ─── */
 static void checkObstacle();
 
-/* ─── Helpers ─── */
 static bool         medCardScanned  = false;
 static bool         medHomeRead     = false;
-static bool         s_waitingAtDestForSw = false;  // Slave reported complete, wait SW to start return
+static bool         s_waitingAtDestForSw = false;
 static String       lastCheckpointNode = "";
 static unsigned long recoveryCallMs = 0;
 static const unsigned long RECOVERY_CALL_TIMEOUT = 5000;
@@ -306,7 +289,7 @@ static void processRfidEvent(const char* uid) {
     if (strcasecmp(entry->nodeId, "MED") == 0) {
         medHomeRead = true;
         if (robotState == ST_IDLE) {
-            medCardScanned = true;  // allow SW to start mission after MED scan
+            medCardScanned = true;
         }
         enqueueEvent(EVT_MED_REACHED);
     }
@@ -437,26 +420,18 @@ static void processEvent(const SmEvent& e) {
     }
 }
 
-// ================================================================
-//  smInit
-// ================================================================
 void smInit() {
     enterIdle();
 }
 
-// ================================================================
-//  smUpdate – called every loop()
-// ================================================================
 void smUpdate() {
-    // Keep HuskyLens reconnect attempts running in background regardless of state.
+
     huskyMaintain();
 
-    // Convert asynchronous flags to state-machine events.
     if (cancelPending && robotState == ST_OUTBOUND) {
         enqueueEvent(EVT_CANCEL_MISSION);
     }
 
-    /* ── Obstacle check (applicable in drive states) ── */
     if (robotState == ST_OUTBOUND || robotState == ST_BACK ||
         robotState == ST_FOLLOW   || robotState == ST_RECOVERY_BLIND ||
         robotState == ST_MISSION_DELEGATED) {
@@ -464,7 +439,6 @@ void smUpdate() {
     }
     if (robotState == ST_OBSTACLE) { updateObstacle(); }
 
-    // Process a bounded number of queued events per loop to keep timing stable.
     SmEvent ev{};
     uint8_t budget = 6;
     while (budget-- && dequeueEvent(ev)) {
@@ -472,9 +446,8 @@ void smUpdate() {
     }
 
     if (robotState == ST_OBSTACLE) { return; }
-    if (obstacleHold) return;            // remote stop command
+    if (obstacleHold) return;
 
-    /* ── Per-state logic ── */
     switch (robotState) {
         case ST_IDLE:
             if (millis() - lastOledMs >= OLED_INTERVAL) {
@@ -502,7 +475,7 @@ void smUpdate() {
             }
             break;
         case ST_MISSION_DELEGATED: {
-            // Slave runs route; Master keeps sending enableLine + enableRFID + baseSpeed
+
             masterMsg.state       = (uint8_t)ST_MISSION_DELEGATED;
             masterMsg.enableLine  = 1;
             masterMsg.enableRFID  = 1;
@@ -527,17 +500,12 @@ void smUpdate() {
         default: break;
     }
 
-    /* ── Send command to Slave at 20 Hz ── */
     if (millis() - lastEspnowTxMs >= ESPNOW_TX_INTERVAL) {
         lastEspnowTxMs = millis();
         masterMsg.state = (uint8_t)robotState;
         espnowSendToSlave(masterMsg);
     }
 }
-
-// ================================================================
-//  Button handlers
-// ================================================================
 
 void smOnSingleClick() {
     enqueueEvent(EVT_BTN_SINGLE);
@@ -573,14 +541,10 @@ void smOnMqttCommand(const char* cmd, const char* value) {
     }
 }
 
-// ================================================================
-//  Slave RFID callback
-// ================================================================
 void smOnSlaveRfid(const char* uid) {
     enqueueEvent(EVT_SLAVE_RFID, uid);
 }
 
-// Called when Slave centre sensor locks onto line during recovery visual docking
 void smOnSlaveSyncDocking() {
     enqueueEvent(EVT_SLAVE_SYNC);
 }
@@ -597,14 +561,10 @@ void smSetWaitingAtDest(bool waiting) {
     s_waitingAtDestForSw = waiting;
 }
 
-// ================================================================
-//  State entry functions
-// ================================================================
-
 static void enterIdle() {
     setStateWithBeep(ST_IDLE);
-    masterMsg  = {};           // zero all velocities
-    masterMsg.enableRFID = 1;  // keep scanning so MED/home position updates while parked
+    masterMsg  = {};
+    masterMsg.enableRFID = 1;
     masterMsg.enableLine = 0;
     masterMsg.missionStart = 0;
     masterMsg.missionCancel = 0;
@@ -622,7 +582,7 @@ static void enterIdle() {
 
 static void enterMissionDelegated() {
     setStateWithBeep(ST_MISSION_DELEGATED);
-    gimbalSetY(SERVO_Y_LEVEL);  // Servo Y rest in autonomous mode
+    gimbalSetY(SERVO_Y_LEVEL);
     masterMsg.state       = (uint8_t)ST_MISSION_DELEGATED;
     masterMsg.enableLine  = 1;
     masterMsg.enableRFID  = 1;
@@ -631,7 +591,7 @@ static void enterMissionDelegated() {
     masterMsg.vY          = 0;
     masterMsg.vR          = 0;
     masterMsg.turnCmd     = 0;
-    masterMsg.missionStart  = 0;  // already sent by mission_delegate
+    masterMsg.missionStart  = 0;
     masterMsg.missionCancel = 0;
     masterMsg.startReturn   = 0;
     Serial.println(F("[SM] → MISSION_DELEGATED (Slave autonomous)"));
@@ -639,11 +599,11 @@ static void enterMissionDelegated() {
 
 static void enterOutbound() {
     setStateWithBeep(ST_OUTBOUND);
-    gimbalSetY(SERVO_Y_LEVEL);  // Servo Y rest in autonomous mode
+    gimbalSetY(SERVO_Y_LEVEL);
     outRouteIdx = 0;
     cancelPending = false;
     medHomeRead = false;
-    // Tell Slave: line-follow ON, RFID ON, base speed
+
     masterMsg.state      = ST_OUTBOUND;
     masterMsg.enableLine = 1;
     masterMsg.enableRFID = 1;
@@ -659,13 +619,13 @@ static void enterOutbound() {
 
 static void enterWaitAtDest() {
     setStateWithBeep(ST_WAIT_AT_DEST);
-    // Stop motors
+
     masterMsg.vX = masterMsg.vY = masterMsg.vR = 0;
     masterMsg.enableLine = 0;
     masterMsg.enableRFID = 0;
     masterMsg.turnCmd = 0;
     espnowSendToSlave(masterMsg);
-    // U-turn at destination
+
     delay(200);
     masterMsg.turnCmd = 'B';
     espnowSendToSlave(masterMsg);
@@ -693,7 +653,7 @@ static void finalizeAtMedAndIdle() {
 
 static void enterBack(bool doUturn) {
     setStateWithBeep(ST_BACK);
-    gimbalSetY(SERVO_Y_LEVEL);  // Servo Y rest in autonomous mode
+    gimbalSetY(SERVO_Y_LEVEL);
     retRouteIdx = 0;
     if (retRouteLen < 2) routeBuildReverseReturn();
     masterMsg.state      = ST_BACK;
@@ -718,7 +678,7 @@ static void enterFollow() {
     gimbalLockX(true);
     servoXLocked = true;
     followPidReset();
-    // Slave: disable line & RFID, direct velocity control
+
     masterMsg = {};
     masterMsg.state      = ST_FOLLOW;
     masterMsg.enableLine = 0;
@@ -730,10 +690,10 @@ static void enterFollow() {
 static void enterRecoveryVis() {
     setStateWithBeep(ST_RECOVERY_VIS);
     huskySwitchToLineTracking();
-    gimbalSetY(SERVO_Y_TILT_DOWN);     // look at floor
+    gimbalSetY(SERVO_Y_TILT_DOWN);
     gimbalLockX(true);
     servoXLocked = true;
-    // Slave: disable line PID (Master controls chassis), disable RFID
+
     masterMsg = {};
     masterMsg.state      = ST_RECOVERY_VIS;
     masterMsg.enableLine = 0;
@@ -745,12 +705,12 @@ static void enterRecoveryVis() {
 
 static void enterRecoveryBlind() {
     setStateWithBeep(ST_RECOVERY_BLIND);
-    // Servo Y back to level
+
     gimbalSetY(SERVO_Y_LEVEL);
     recoveryCheckpointsHit = 0;
     recoveryCpUids[0] = "";
     recoveryCpUids[1] = "";
-    // Slave: line-follow ON, RFID ON
+
     masterMsg = {};
     masterMsg.state      = ST_RECOVERY_BLIND;
     masterMsg.enableLine = 1;
@@ -763,11 +723,11 @@ static void enterRecoveryBlind() {
 
 static void enterRecoveryCall() {
     setStateWithBeep(ST_RECOVERY_CALL);
-    // Stop
+
     masterMsg.vX = masterMsg.vY = masterMsg.vR = 0;
     masterMsg.enableLine = 0;
     espnowSendToSlave(masterMsg);
-    // Send position to backend
+
     const char* lastNode = "";
     const char* previousNode = nullptr;
 
@@ -788,16 +748,9 @@ static void enterRecoveryCall() {
                   previousNode ? previousNode : "");
 }
 
-// ================================================================
-//  Obstacle management
-// ================================================================
-
 static void checkObstacle() {
-    uint16_t dist = 0;
-    if (millis() - lastTofMs < TOF_INTERVAL) return;
-    lastTofMs = millis();
-
-    if (!tofRead(dist)) return;
+    if (!g_tofValid) return;
+    const uint16_t dist = g_tofMm;
     if (dist < TOF_STOP_DIST && !obstacleHold) {
         enqueueEvent(EVT_OBSTACLE_HIT);
     }
@@ -816,38 +769,31 @@ static void enterObstacle() {
 static void exitObstacle() {
     setStateWithBeep(stateBeforeObstacle);
     Serial.printf("[SM] Obstacle clear → state %u\n", robotState);
-    // Restore driving (velocities will be set by next update cycle)
+
 }
 
 static void updateObstacle() {
-    uint16_t dist = 0;
-    if (millis() - lastTofMs < TOF_INTERVAL) return;
-    lastTofMs = millis();
-    if (!tofRead(dist)) return;
+    if (!g_tofValid) return;
+    const uint16_t dist = g_tofMm;
     if (dist >= TOF_RESUME_DIST) {
         enqueueEvent(EVT_OBSTACLE_CLEAR);
         return;
     }
-    // Beep periodically
+
     if (millis() - lastObstacleBeepMs >= OBSTACLE_BEEP_MS) {
         lastObstacleBeepMs = millis();
         buzzerObstacle();
     }
 }
 
-// ================================================================
-//  Per-state update functions
-// ================================================================
-
 static void updateOutbound() {
-    // OLED refresh
+
     if (millis() - lastOledMs >= OLED_INTERVAL) {
         lastOledMs = millis();
         String next = (outRouteIdx + 1 < outRouteLen) ? outRoute[outRouteIdx + 1].nodeId : destBed;
         displayOutbound(patientName.c_str(), next.c_str());
     }
-    // Velocities are set by Slave local line-follow; Master only sends turns via turnCmd
-    // After Slave finishes a turn, clear turnCmd
+
     if (slaveMsg.turnDone && masterMsg.turnCmd != 0) {
         masterMsg.turnCmd = 0;
         masterMsg.vX = LINE_BASE_SPEED;
@@ -902,15 +848,14 @@ static void updateFollow() {
             const char* phase = faceMatched ? "Matching" : "Find Target";
             displayFaceAuth(phase, followFaceStreak, HUSKY_FACE_AUTH_STREAK);
         }
-        // Gate movement until the correct face is confirmed.
+
         masterMsg.vX = 0;
         masterMsg.vY = 0;
         masterMsg.vR = 0;
         return;
     }
 
-    uint16_t tofDist = 0;
-    tofRead(tofDist);
+    uint16_t tofDist = g_tofValid ? g_tofMm : 0;
 
     FollowOutput fout = followPidUpdate(
         tgt.xCenter, tgt.detected, tofDist, dt);
@@ -919,23 +864,20 @@ static void updateFollow() {
     masterMsg.vY = fout.vY;
     masterMsg.vR = fout.vR;
 
-    // Side ultrasonics safety
     if (millis() - lastUsMs >= US_INTERVAL) {
         lastUsMs = millis();
-        long lmm = usLeftMm();
-        long rmm = usRightMm();
-        if (lmm > 0 && lmm < US_SIDE_WARN_MM) masterMsg.vY = max(masterMsg.vY, 0.0f);  // don't strafe left
-        if (rmm > 0 && rmm < US_SIDE_WARN_MM) masterMsg.vY = min(masterMsg.vY, 0.0f);  // don't strafe right
+        long lmm = g_usLeftMm;
+        long rmm = g_usRightMm;
+        if (lmm > 0 && lmm < US_SIDE_WARN_MM) masterMsg.vY = max(masterMsg.vY, 0.0f);
+        if (rmm > 0 && rmm < US_SIDE_WARN_MM) masterMsg.vY = min(masterMsg.vY, 0.0f);
     }
 
-    // OLED
     if (millis() - lastOledMs >= OLED_INTERVAL) {
         lastOledMs = millis();
         displayFollow(tgt.detected ? "Locked" : "Lost", tofDist / 10);
     }
 }
 
-/* ── Recovery Step 1: Visual Docking ── */
 static void updateRecoveryVis() {
     if (millis() - lastHuskyMs < HUSKY_INTERVAL) return;
     lastHuskyMs = millis();
@@ -944,35 +886,28 @@ static void updateRecoveryVis() {
     HuskyLine line = huskyGetLine();
 
     if (line.detected) {
-        // Use line angle to steer chassis toward the line
-        // xTarget − xOrigin gives lateral offset, yTarget − yOrigin gives angle
+
         float dx = line.xTarget - line.xOrigin;
         float dy = line.yTarget - line.yOrigin;
-        float angleErr = atan2f(dx, dy) * 57.2958f;   // degrees from vertical
+        float angleErr = atan2f(dx, dy) * 57.2958f;
 
-        // Lateral offset of line from image centre
         float cx = ((float)line.xOrigin + (float)line.xTarget) / 2.0f;
         float lateralErr = cx - (float)HUSKY_CENTER_X;
 
-        // Strafe to centre on line, rotate to align
         masterMsg.vY = constrain(lateralErr * 1.5f, -120.0f, 120.0f);
         masterMsg.vR = constrain(angleErr * 1.0f,   -100.0f, 100.0f);
-        masterMsg.vX = 40;   // creep forward
+        masterMsg.vX = 40;
     } else {
-        // No line visible – spin slowly looking for it
+
         masterMsg.vX = 0;
         masterMsg.vY = 0;
-        masterMsg.vR = 60;    // slow rotation
+        masterMsg.vR = 60;
     }
 
-    // Check sync from Slave (centre line sensor triggered)
-    // (handled by smOnSlaveSyncDocking callback)
 }
 
-/* ── Recovery Step 2: Blind line-follow ── */
 static void updateRecoveryBlind() {
-    // Slave does line-follow locally; Master just watches for RFID via callback
-    // OLED update
+
     if (millis() - lastOledMs >= OLED_INTERVAL) {
         lastOledMs = millis();
         displayRecovery(2);
@@ -983,12 +918,10 @@ static void updateRecoveryBlind() {
     }
 }
 
-/* ── Recovery Step 3: Call Home ── */
 static void updateRecoveryCall() {
-    // Wait for backend return_route via MQTT (handled in mqtt_comm → routeParseReturn)
+
     if (retRouteLen >= 2) {
-        // Execute backend-provided initial alignment action at current node.
-        // This removes local heading heuristics in recovery.
+
         const char firstAction = retRoute[0].action;
         if (firstAction == 'L' || firstAction == 'R' || firstAction == 'B') {
             masterMsg.vX = masterMsg.vY = masterMsg.vR = 0;
@@ -1008,7 +941,6 @@ static void updateRecoveryCall() {
         return;
     }
 
-    // Timeout – use reverse fallback
     if (millis() - recoveryCallMs > RECOVERY_CALL_TIMEOUT) {
         Serial.println(F("[SM] Recovery route timeout – using reverse"));
         routeBuildReverseReturn();

@@ -6,7 +6,6 @@ import Robot from '../models/Robot.js';
 import TransportMission from '../models/TransportMission.js';
 import Alert from '../models/Alert.js';
 
-// MQTT Service for robot communication
 import { publishMissionAssign, publishMissionCancel } from '../services/mqttService.js';
 
 const router = express.Router();
@@ -54,7 +53,7 @@ function normalizeBedId(bedId) {
     const room = Number(m[1]);
     const bed = Number(m[2]);
     if (!(room >= 1 && room <= 4) || !(bed >= 1 && bed <= 6)) return null;
-    // Bed1->M1, Bed2->O1, Bed3->M2, Bed4->O2, Bed5->M3, Bed6->O3
+
     const idx = Math.ceil(bed / 2);
     const side = (bed % 2 === 1) ? 'M' : 'O';
     return `R${room}${side}${idx}`;
@@ -80,18 +79,6 @@ function pickDestinationNodeId(map, bedId) {
   return null;
 }
 
-/**
- * HARD ROUTES đúng theo bản đồ bạn chốt:
- * - Trục chính: MED -> H_MED -> H_BOT -> (J4 -> H_TOP nếu room 1/2)
- * - Vào phòng qua D1:
- *   + Nhánh M: D1 -> M1 -> M2 -> M3
- *   + Nhánh O: D1 -> D2 -> O1 -> O2 -> O3
- * - Chiều đi: MED->H_MED (F), tại H_MED rẽ trái để lên H_BOT, rồi mới tiếp tục.
- * - Chiều về:
- *   + O: O1->D2->(rẽ)->D1->(thẳng)->hub
- *   + M: M1->D1->(rẽ)->hub
- *   + Tại hub: room 1/3 rẽ phải để đi xuống; room 2/4 rẽ trái để đi xuống.
- */
 function roomProfile(room) {
   const isLeftSideRoom = (room === 1 || room === 3);
   const hubNode = (room <= 2) ? 'H_TOP' : 'H_BOT';
@@ -109,25 +96,16 @@ function roomProfile(room) {
       ? ['H_TOP', 'J4', 'H_BOT', 'H_MED', 'MED']
       : ['H_BOT', 'H_MED', 'MED'],
 
-    // Vào phòng từ hub -> D1
     enterRoomTurn: isLeftSideRoom ? 'L' : 'R',
 
-    // Trong phòng (outbound)
-    // - M: tại D1 rẽ xuống M1 (room 1/3: L, room 2/4: R)
     toMFromD1Turn: isLeftSideRoom ? 'L' : 'R',
 
-    // - O: D1->D2 (thẳng), tại D2 rẽ xuống O1 (room 1/3: L, room 2/4: R)
     toOFromD2Turn: isLeftSideRoom ? 'L' : 'R',
 
-    // Trong phòng (return)
-    // - O: tại D2 rẽ để về D1 (room 1/3: R, room 2/4: L)
     backToD1FromD2Turn: isLeftSideRoom ? 'R' : 'L',
 
-    // - M: tại D1 rẽ để ra hub (room 1/3: R, room 2/4: L)
     exitRoomTurnAtD1_M: isLeftSideRoom ? 'R' : 'L',
 
-    // Tại hub khi bắt đầu đi xuống trục chính (return):
-    // room 1/3 rẽ phải; room 2/4 rẽ trái
     exitHubTurnToBack: isLeftSideRoom ? 'R' : 'L',
   };
 }
@@ -145,27 +123,25 @@ function buildHardRouteNodeIds(normalBedId) {
   const bedsSeq = [];
   for (let k = 1; k <= idx; k++) bedsSeq.push(`R${room}${side}${k}`);
 
-  // OUTBOUND
   const outNodeIds = [...prof.corridorOut, D1];
   if (side === 'M') {
-    // M: D1 -> M1 -> M2 -> ...
+
     outNodeIds.push(...bedsSeq);
   } else {
-    // O: D1 -> D2 -> O1 -> O2 -> ...
+
     outNodeIds.push(D2, ...bedsSeq);
   }
 
-  // RETURN
   const backNodeIds = [];
   backNodeIds.push(normalBedId);
 
   for (let k = idx - 1; k >= 1; k--) backNodeIds.push(`R${room}${side}${k}`);
 
   if (side === 'M') {
-    // M: ... -> M1 -> D1
+
     backNodeIds.push(D1);
   } else {
-    // O: ... -> O1 -> D2 -> D1
+
     backNodeIds.push(D2, D1);
   }
 
@@ -174,7 +150,6 @@ function buildHardRouteNodeIds(normalBedId) {
   return { parsed, prof, outNodeIds, backNodeIds };
 }
 
-// Actions stored on the checkpoint that is READ, to orient robot towards NEXT checkpoint.
 function actionsForLeg(from, to, ctx, phase) {
   const { room, side, prof } = ctx;
   const D1 = `R${room}D1`;
@@ -182,70 +157,61 @@ function actionsForLeg(from, to, ctx, phase) {
 
   const isBed = new RegExp(`^R${room}[MO][1-3]$`);
 
-  // ===== OUTBOUND =====
   if (phase === 'out') {
-    // Trục chính (theo yêu cầu): MED thẳng ra H_MED, rồi tại H_MED rẽ trái để lên H_BOT
+
     if (from === 'MED' && to === 'H_MED') return ['F'];
     if (from === 'H_MED' && to === 'H_BOT') return ['L', 'F'];
 
-    // Room 1/2: H_BOT -> J4 -> H_TOP
     if (from === 'H_BOT' && to === 'J4') return ['F'];
     if (from === 'J4' && to === 'H_TOP') return ['F'];
 
-    // Vào phòng: hub -> D1
     if (from === prof.hubNode && to === D1) return [prof.enterRoomTurn, 'F'];
 
-    // Trong phòng
     if (side === 'M') {
-      // D1 -> M1 (rẽ xuống nhánh M)
+
       if (from === D1 && to === `R${room}M1`) return [prof.toMFromD1Turn, 'F'];
-      // M chain
+
       if (isBed.test(from) && isBed.test(to)) return ['F'];
     } else {
-      // D1 -> D2 (thẳng)
+
       if (from === D1 && to === D2) return ['F'];
-      // D2 -> O1 (rẽ xuống nhánh O)
+
       if (from === D2 && to === `R${room}O1`) return [prof.toOFromD2Turn, 'F'];
-      // O chain
+
       if (isBed.test(from) && isBed.test(to)) return ['F'];
     }
 
     return ['F'];
   }
 
-  // ===== RETURN =====
-
-  // 1) Trục chính (từ hub về MED)
   if (room <= 2) {
-    // H_TOP -> J4: cần rẽ tại H_TOP theo side room (1/3: R, 2/4: L)
+
     if (from === 'H_TOP' && to === 'J4') return [prof.exitHubTurnToBack, 'F'];
     if (from === 'J4' && to === 'H_BOT') return ['F'];
-    // Đoạn này từ J4 xuống H_BOT rồi xuống H_MED là thẳng
+
     if (from === 'H_BOT' && to === 'H_MED') return ['F'];
   } else {
-    // Room 3/4: ngay tại H_BOT đi xuống H_MED cần rẽ theo room (3: R, 4: L)
+
     if (from === 'H_BOT' && to === 'H_MED') return [prof.exitHubTurnToBack, 'F'];
   }
 
-  // H_MED -> MED: rẽ phải để vào MED (đúng logic: outbound H_MED rẽ trái để đi lên)
   if (from === 'H_MED' && to === 'MED') return ['R', 'F'];
 
-  // 2) Trong phòng (từ giường ra D1)
   if (side === 'M') {
-    // M chain
+
     if (isBed.test(from) && isBed.test(to)) return ['F'];
-    // M1 -> D1 (thẳng đi lên)
+
     if (from === `R${room}M1` && to === D1) return ['F'];
-    // D1 -> hub (rẽ để ra cửa theo room)
+
     if (from === D1 && to === prof.corridorBack[0]) return [prof.exitRoomTurnAtD1_M, 'F'];
   } else {
-    // O chain
+
     if (isBed.test(from) && isBed.test(to)) return ['F'];
-    // O1 -> D2 (thẳng đi lên)
+
     if (from === `R${room}O1` && to === D2) return ['F'];
-    // D2 -> D1 (rẽ để về cửa)
+
     if (from === D2 && to === D1) return [prof.backToD1FromD2Turn, 'F'];
-    // D1 -> hub (thẳng ra hub)
+
     if (from === D1 && to === prof.corridorBack[0]) return ['F'];
   }
 
@@ -302,32 +268,27 @@ function mustExist(graph, ids) {
   return ids.every(id => graph.nodes.has(id));
 }
 
-// ================== API ==================
-
-// GET /missions/transport - List transport missions
 router.get('/transport', async (req, res) => {
   try {
     const { status, robotId, limit = 50 } = req.query;
-    
+
     const query = {};
-    
-    // Filter by status (can be comma-separated like "pending,en_route,arrived")
+
     if (status) {
       const statuses = String(status).split(',').map(s => s.trim());
       query.status = { $in: statuses };
     }
-    
-    // Filter by robotId
+
     if (robotId) {
       query.carryRobotId = String(robotId).trim();
     }
-    
+
     const missions = await TransportMission
       .find(query)
       .sort({ createdAt: -1 })
       .limit(Number(limit))
       .lean();
-    
+
     res.json(missions);
   } catch (e) {
     console.error('List missions error:', e);
@@ -344,7 +305,7 @@ router.post('/delivery', async (req, res) => {
     const map = await MapGraph.findOne({ mapId }).lean();
     if (!map) return res.status(404).send('Map not found');
 
-    const onlineSince = new Date(Date.now() - 30_000);  // 30 seconds online check
+    const onlineSince = new Date(Date.now() - 30_000);
     const carry = await Robot.findOne({
       type: 'carry',
       status: 'idle',
@@ -417,7 +378,6 @@ router.post('/delivery', async (req, res) => {
       }
     );
 
-    // Publish mission to robot via MQTT
     publishMissionAssign(carry.robotId, {
       payloadVersion: 2,
       missionId,
@@ -610,7 +570,6 @@ router.post('/carry/:missionId/cancel', async (req, res) => {
       }
     );
 
-    // Publish cancel to robot via MQTT
     publishMissionCancel(m.carryRobotId, missionId);
 
     res.json({ ok: true });
@@ -642,26 +601,24 @@ router.post('/carry/:missionId/returned', async (req, res) => {
   }
 });
 
-// GET /missions/delivery/history - Get delivery history for Carry robots
 router.get('/delivery/history', async (req, res) => {
   try {
     const { robotId, patientId, startDate, endDate, status, page = 1, limit = 50 } = req.query;
-    
+
     const query = {};
-    
+
     if (robotId) query.carryRobotId = robotId;
     if (patientId) query.patientId = patientId;
     if (status) query.status = status;
-    
-    // Date range filter
+
     if (startDate || endDate) {
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
-    
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
+
     const [missions, total] = await Promise.all([
       TransportMission.find(query)
         .sort({ createdAt: -1 })
@@ -670,18 +627,17 @@ router.get('/delivery/history', async (req, res) => {
         .lean(),
       TransportMission.countDocuments(query)
     ]);
-    
-    // Transform missions to history format
+
     const history = missions.map(m => {
       const startTime = m.startedAt || m.createdAt;
       const endTime = m.completedAt || m.returnedAt || m.cancelledAt;
       const duration = endTime ? Math.round((new Date(endTime) - new Date(startTime)) / 60000) : null;
-      
+
       return {
         _id: m._id.toString(),
         missionId: m.missionId,
         robotId: m.carryRobotId,
-        robotName: m.carryRobotId, // Can be enhanced with robot name lookup
+        robotName: m.carryRobotId,
         patientId: m.patientId,
         patientName: m.patientName || 'Unknown',
         destinationRoom: m.destinationRoomId,
@@ -697,7 +653,7 @@ router.get('/delivery/history', async (req, res) => {
         notes: m.notes
       };
     });
-    
+
     res.json({
       history,
       pagination: {

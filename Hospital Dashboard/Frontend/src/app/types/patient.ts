@@ -1,8 +1,8 @@
 export interface Patient {
   id: string;
-  mrn: string; // Medical Record Number
+  mrn: string;
   fullName: string;
-  cardNumber: string; // RFID/UID
+  cardNumber: string;
   admissionDate: string;
   status: PatientStatus;
   primaryDoctor: string;
@@ -12,7 +12,7 @@ export interface Patient {
   insurancePolicyId?: string;
   relativeName: string;
   relativePhone: string;
-  photo?: string; // Base64 or URL
+  photo?: string;
   medicationLog: MedicationEntry[];
   allergens: string[];
   notes: string;

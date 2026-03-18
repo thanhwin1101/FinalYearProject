@@ -13,7 +13,6 @@ import mapsRouter from './routes/maps.js';
 import missionsRouter from './routes/missions.js';
 import alertsRouter from './routes/alerts.js';
 
-// MQTT Service
 import { initMqtt } from './services/mqttService.js';
 
 dotenv.config();
@@ -40,7 +39,6 @@ app.use('/api/alerts', alertsRouter);
 app.use('/uploads', express.static('uploads'));
 app.use(express.static('public'));
 
-// robot dashboard route
 app.get('/robot-dashboard.html', (_req, res) => {
   res.sendFile(path.join(process.cwd(), 'public', 'robot-dashboard.html'));
 });
@@ -49,8 +47,7 @@ app.get('/robots', (_req, res) => res.redirect('/robot-dashboard.html'));
 const port = process.env.PORT || 3000;
 
 connectDB().then(async () => {
-  // Initialize MQTT connection
   initMqtt();
-  
+
   app.listen(port, '0.0.0.0', () => console.log('Server running on', port));
 });

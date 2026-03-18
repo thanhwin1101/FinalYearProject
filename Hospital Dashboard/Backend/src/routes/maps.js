@@ -20,7 +20,7 @@ function buildAdj(nodes, edges) {
     if (!adj.has(e.from) || !adj.has(e.to)) continue;
     const w = typeof e.weight === 'number' ? e.weight : 1;
     adj.get(e.from).push({ to: e.to, w });
-    adj.get(e.to).push({ to: e.from, w }); // mặc định undirected
+    adj.get(e.to).push({ to: e.from, w });
   }
   return adj;
 }
@@ -29,7 +29,7 @@ function dijkstra(adj, start, goal) {
   const dist = new Map();
   const prev = new Map();
   const visited = new Set();
-  const pq = []; // [d, node]
+  const pq = [];
 
   dist.set(start, 0);
   pq.push([0, start]);
@@ -100,11 +100,6 @@ function computeEdgeWeights(nodes = [], edges = []) {
   });
 }
 
-// =========================
-// CRUD tối thiểu
-// =========================
-
-/** Tạo map (metadata) */
 r.post('/', async (req, res) => {
   try {
     const { mapId, name, building, floor, imageUrl } = req.body || {};
@@ -120,7 +115,6 @@ r.post('/', async (req, res) => {
   }
 });
 
-/** Import node/edge một lần (seed dữ liệu) */
 r.post('/:mapId/import', async (req, res) => {
   try {
     const mapId = String(req.params.mapId);
@@ -141,23 +135,12 @@ r.post('/:mapId/import', async (req, res) => {
   }
 });
 
-/** Lấy map */
 r.get('/:mapId', async (req, res) => {
   const map = await MapGraph.findOne({ mapId: String(req.params.mapId) }).lean();
   if (!map) return res.status(404).json({ message: 'Map not found' });
   res.json(map);
 });
 
-// =========================
-// Routing
-// =========================
-
-/**
- * GET /api/maps/:mapId/route
- * Query:
- * - fromNodeId hoặc fromX,fromY (snap về checkpoint gần nhất)
- * - toNodeId hoặc bedId hoặc stationId hoặc rfidUid
- */
 r.get('/:mapId/route', async (req, res) => {
   try {
     const map = await MapGraph.findOne({ mapId: String(req.params.mapId) }).lean();
@@ -166,7 +149,6 @@ r.get('/:mapId/route', async (req, res) => {
     const nodes = map.nodes || [];
     const edges = map.edges || [];
 
-    // from
     let fromNode = null;
     if (req.query.fromNodeId) {
       fromNode = nodes.find((n) => n.nodeId === String(req.query.fromNodeId));
@@ -175,7 +157,6 @@ r.get('/:mapId/route', async (req, res) => {
     }
     if (!fromNode) return res.status(400).json({ message: 'fromNodeId OR fromX/fromY required (and must resolve)' });
 
-    // to
     const toNode = resolveDestinationNode(nodes, {
       toNodeId: req.query.toNodeId,
       bedId: req.query.bedId,

@@ -1,311 +1,193 @@
-# Hospital Robot System
+﻿# Hospital Robot System
 
-## System Overview
+## Overview
 
-This is a **hospital rehabilitation system** with three integrated components:
-1. **Biped Robot** (`BipedRobot/`) - 10-servo walking robot for patient rehabilitation assistance
-2. **Carry Robot** (`Carry_robot/`) - ESP32 transport robot with Mecanum wheels for medication delivery & biped transport
-3. **Hospital Dashboard** (`Hospital Dashboard/`) - Full-stack web app (Express.js + React/Vite) for management
+Hospital medication delivery system with two integrated components:
+1. **Carry Robot** (`CarryRobot/`) â€” Dual-ESP32 transport robot with Mecanum wheels, HuskyLens vision, NFC checkpoint navigation, and MQTT communication
+2. **Hospital Dashboard** (`Hospital Dashboard/`) â€” Full-stack web app (Express.js + React/Vite + MongoDB) for patient management, robot monitoring, and mission control
 
-## Architecture & Data Flow
+## Architecture
 
 ```
-[Dashboard Frontend:5173] <--> [Backend API:3000] <--> [MongoDB]
-                                       ^
-                                       | HTTP REST
-                        +--------------+---------------+
-                        v                              v
-                [Carry Robot ESP32]            [Biped Robot ESP32s]
-                        ^                       (Walking + User Auth)
-                        | ESP-NOW                      |
-                        v                              | RFID checkpoint
-                [ESP32-CAM Module]                     v
-                                              [Location to Dashboard]
+[Dashboard Frontend:5173] â”€â”€Vite Proxyâ”€â”€> [Backend API:3000] â”€â”€Mongooseâ”€â”€> [MongoDB]
+                                                â”‚
+                                          MQTT (PubSubClient)
+                                                â”‚
+                                       [Carry Master ESP32]
+                                          WiFi + MQTT + HuskyLens
+                                          OLED + Servo Gimbal
+                                                â”‚
+                                            ESP-NOW
+                                                â”‚
+                                       [Carry Slave ESP32]
+                                          Mecanum + NFC + Line Follow
 ```
 
-### Main Workflows
-- **Rehabilitation Session**: User scans RFID on Biped → Dashboard logs session → Biped tracks steps → Session ends
-- **Biped Transport**: Biped scans checkpoint RFID → Dashboard knows location → Commands Carry Robot to go to that checkpoint → Carry Robot returns to designated location
-- **Medication Delivery**: Dashboard creates mission → Carry Robot navigates via NFC → Delivers to bed
+### Workflow
+1. Dashboard creates delivery mission via `/api/missions/delivery`
+2. Backend computes hard-coded route, publishes `mission/assign` via MQTT
+3. Carry Master receives mission, streams route to Slave via ESP-NOW
+4. Slave navigates via NFC checkpoints + line following
+5. Robot delivers to bed, returns to MED station
 
-### Communication Protocols
-- **Biped ESP32s**: UART between Walking Controller ↔ User Manager
-- **Biped → Dashboard**: WiFi HTTPS (from User Manager ESP32)
-- **Carry Robot → Dashboard**: WiFi HTTP REST API
-- **Carry Robot ↔ ESP32-CAM**: ESP-NOW wireless (for Follow Mode)
+## Carry Robot (`CarryRobot/`)
 
-## Biped Robot Firmware (`BipedRobot/`)
+Dual-ESP32 architecture communicating via ESP-NOW.
 
-### Hardware Architecture
-- **Dual ESP32 System** (UART communication between them):
-  - **ESP32 Walking Controller**: Servo control, balance, locomotion ✅ Implemented
-  - **ESP32 User Manager**: RFID authentication, OLED display, checkpoint scanning, WiFi HTTP to Dashboard ✅ Implemented (`BipedUserManager/`)
+### Master (`carry_master/`)
 
-### Servo Configuration (10 servos via PCA9685 I2C)
-| Index | Joint | Pin | Function |
-|-------|-------|-----|----------|
-| 0 | HIP_PITCH_L | 0 | Left leg swing forward/backward |
-| 1 | HIP_ROLL_L | 1 | Left leg lateral movement |
-| 2 | KNEE_PITCH_L | 2 | Left knee bend |
-| 3 | ANKLE_PITCH_L | 3 | Left foot tilt front/back |
-| 4 | ANKLE_ROLL_L | 4 | Left foot tilt left/right |
-| 5 | HIP_PITCH_R | 5 | Right leg swing (inverted) |
-| 6 | HIP_ROLL_R | 6 | Right leg lateral |
-| 7 | KNEE_PITCH_R | 7 | Right knee (inverted) |
-| 8 | ANKLE_PITCH_R | 8 | Right foot pitch (inverted) |
-| 9 | ANKLE_ROLL_R | 9 | Right foot roll |
+| Setting | Value |
+|---------|-------|
+| Board | ESP32 DevKit |
+| Framework | Arduino (PlatformIO) |
+| Upload speed | 921600 baud |
 
-### Physical Dimensions (mm)
-- Thigh (L1): 60mm | Shank (L2): 70mm | Ankle Height (L3): 62mm | Foot (L4): 80mm
+**Libraries**: WiFiManager, ArduinoJson, PubSubClient, U8g2, VL53L0X, ESP32Servo, HUSKYLENSArduino
 
-### Joint Limits (degrees, 0° = standing straight)
-- Hip Pitch: -45° to +45° | Knee: -5° to +140° | Ankle Pitch: -30° to +30°
-- Hip Roll: -30° to +30° | Ankle Roll: -30° to +30°
+**Responsibilities**: WiFi/MQTT, HuskyLens vision (face auth + follow), servo gimbal, OLED display, VL53L0X + ultrasonic sensors, mission state machine, route management, ESP-NOW master
 
-### Sensors
-- **FSR402 × 8** (4 per foot): Ground contact detection, weight distribution for balance
-- **MPU6050**: IMU for body tilt angle, used with ankle servos for active balance
-- **RFID Module**: User authentication + checkpoint location scanning
+**Pin Mapping**:
 
-**FSR402 Foot Sensor Layout (per foot):**
+| Pin | Function |
+|-----|----------|
+| GPIO 21/22 | I2C SDA/SCL (OLED SH1106, VL53L0X) |
+| GPIO 16/17 | HuskyLens UART (RX/TX, 9600 baud) |
+| GPIO 25/26 | Left ultrasonic (TRIG/ECHO) |
+| GPIO 32/33 | Right ultrasonic (TRIG/ECHO) |
+| GPIO 13/12 | Servo gimbal (X/Y) |
+| GPIO 34 | Servo X feedback ADC |
+| GPIO 14 | Buzzer |
+| GPIO 4 | Cargo switch |
+
+**State Machine**:
 ```
-        [TOE]           ← Front sensor (toe contact)
-          |
-    [L]-------[R]       ← Left/Right edge sensors (lateral balance)
-          |
-        [HEEL]          ← Rear sensor (heel contact)
-```
-| Position | Left Foot | Right Foot | Purpose |
-|----------|-----------|------------|---------|
-| Toe | FSR_L_TOE | FSR_R_TOE | Detect forward tilt, toe-off phase |
-| Left Edge | FSR_L_LEFT | FSR_R_LEFT | Detect lateral roll to left |
-| Right Edge | FSR_L_RIGHT | FSR_R_RIGHT | Detect lateral roll to right |
-| Heel | FSR_L_HEEL | FSR_R_HEEL | Detect heel strike, backward tilt |
-
-### User Interface
-- **OLED Display**: Shows username, step count, session status
-- **4 Buttons**: Forward, Backward, Turn Left, Turn Right
-- **Rotary Encoder**: Speed adjustment
-
-### Key Files
-- [BipedRobot.ino](BipedRobot/BipedRobot.ino) - Walking Controller: servo control, balance, UART receive
-- [ServoController.h](BipedRobot/ServoController.h) - PCA9685 servo abstraction
-- [Kinematics.h](BipedRobot/Kinematics.h) - Leg inverse kinematics
-- [config.h](BipedRobot/config.h) - Servo limits, PID gains, pin definitions
-- [BipedUserManager.ino](BipedUserManager/BipedUserManager.ino) - User Manager: RFID, OLED, WiFi, buttons
-
-### Balance System (Kalman Filter + PD Control)
-The balance system runs at 50Hz and uses sensor fusion:
-
-**Kalman Filter for MPU6050:**
-```
-1. Predict: angle += gyroRate * dt
-2. Update: fuse with accelerometer angle
-3. Output: filtered pitch & roll angles
+ST_IDLE -> ST_OUTBOUND -> ST_WAIT_AT_DEST -> ST_BACK -> ST_IDLE
+                |
+            ST_FOLLOW / ST_RECOVERY_VIS / ST_RECOVERY_BLIND / ST_RECOVERY_CALL
+                |
+            ST_OBSTACLE (pause on VL53L0X < 220mm)
+            ST_MISSION_DELEGATED
 ```
 
-**Control Loop:**
-- Read MPU6050 → Kalman filter → Get pitch/roll error
-- PD control calculates ankle correction: `output = KP*error + KD*gyroRate`
-- Ankle servos compensate to keep body upright
-- Parameters: KP_PITCH=0.40, KD_PITCH=0.06, KP_ROLL=0.55, KD_ROLL=0.05
+**MQTT Topics** (prefix `hospital/robots/CARRY-01/`):
 
-**Safety Features:**
-- Soft-start ramp (2s) prevents jerky startup
-- Slew-rate limiting: Hip 12°/s, Knee 8°/s, Ankle 18°/s
-- Deadband: ±1° to prevent oscillation
-- FSR402 sensors detect foot contact for gait phase detection
+| Topic | Direction |
+|-------|-----------|
+| `telemetry` | Publish (every 1s) |
+| `mission/assign` | Subscribe |
+| `mission/progress` | Publish |
+| `mission/complete` | Publish |
+| `mission/returned` | Publish |
+| `mission/cancel` | Subscribe |
+| `mission/return_route` | Subscribe |
+| `position/waiting_return` | Publish |
+| `command` | Subscribe |
 
-### Gait System (Predefined Patterns + Dynamic Balance)
-Movement patterns are predefined keyframe sequences, but balance is calculated in real-time:
+**WiFi/MQTT Config**:
+- Portal SSID: `CarryMaster-Setup` / `carry123`
+- MQTT: `192.168.137.1:1883`, user `hospital_robot` / `123456`
+- MQTT server saved in NVS (`carrycfg` namespace)
 
-**Gait Phases (per step cycle):**
-```
-PHASE_DOUBLE_SUPPORT  → Both feet on ground (stable)
-PHASE_RIGHT_SWING     → Right foot lifting, left foot supporting
-PHASE_DOUBLE_SUPPORT  → Transfer weight
-PHASE_LEFT_SWING      → Left foot lifting, right foot supporting
-```
+### Slave (`carry_slave/`)
 
-**Predefined Movement Patterns:**
-| Command | Pattern Description |
-|---------|---------------------|
-| FORWARD | Hip pitch sequence + knee lift + weight shift |
-| BACKWARD | Reverse hip pitch + backward step |
-| TURN_LEFT | Left hip roll out + right step forward + rotate |
-| TURN_RIGHT | Right hip roll out + left step forward + rotate |
+| Setting | Value |
+|---------|-------|
+| Board | ESP32 DevKit |
+| Framework | Arduino (PlatformIO) |
 
-**Balance During Movement:**
-- Each gait phase has target joint angles (keyframes)
-- Kalman filter continuously monitors body tilt
-- Ankle servos compensate in real-time while following gait pattern
-- FSR402 sensors confirm foot placement before weight transfer
-- If balance error exceeds threshold → pause movement → recover → continue
+**Library**: Adafruit PN532
 
-### UART Protocol (Walking ↔ User Manager)
-```
-Walking → User: "STEP:123\n"           # Step count update
-Walking → User: "BALANCE:OK\n"         # Balance status
-User → Walking: "CMD:FWD\n"            # Forward command
-User → Walking: "CMD:BACK\n"           # Backward command
-User → Walking: "CMD:LEFT\n"           # Turn left
-User → Walking: "CMD:RIGHT\n"          # Turn right
-User → Walking: "SPEED:75\n"           # Speed (0-100)
-User → Walking: "STOP\n"               # Emergency stop
-```
+**Responsibilities**: Mecanum wheel drive (2x L298N, 4 motors), PN532 NFC reader (SPI), 3-sensor line follower with PID, route execution, ESP-NOW slave
 
-### User Manager ESP32 (`BipedUserManager/`)
-**Hardware Components:**
-- RFID-RC522 (SPI): User authentication + checkpoint scanning
-- OLED SSD1306 0.96" (I2C): Display patient name + step count
-- 4 Buttons (GPIO): Forward, Backward, Left, Right, Stop
-- Rotary Encoder: Speed adjustment
-- WiFi + WiFiManager: HTTP to Dashboard API
+**Pin Mapping**:
 
-**Pin Configuration:**
-| Component | Pins |
-|-----------|------|
-| RFID RC522 | SS=5, RST=4, SCK=18, MISO=19, MOSI=23 |
-| OLED I2C | SDA=21, SCL=22 |
-| Buttons | FWD=32, BACK=33, LEFT=25, RIGHT=26, STOP=27 |
-| Encoder | CLK=34, DT=35, SW=39 |
-| UART | TX=17, RX=16 |
+| Pin | Function |
+|-----|----------|
+| GPIO 18/19/23/5 | SPI (SCK/MISO/MOSI/SS) for PN532 NFC |
+| GPIO 35/36/39 | Line sensors (S1/S2/S3) |
+| GPIO 13/12/14/27/26/25 | L298N #1 (ENA/IN1/IN2/IN3/IN4/ENB) |
+| GPIO 33/4/16/17/22/21 | L298N #2 (ENA/IN1/IN2/IN3/IN4/ENB) |
 
-**Key Features:**
-- **WiFiManager**: Hold FORWARD button 3s → Config portal (`BipedRobot-Setup` / `biped123`)
-- **Patient Lookup**: RFID scan → API `/api/patients/by-card/:cardNumber` → Start session
-- **Session Toggle**: Same card scan ends session
-- **Access Control**: Unregistered cards denied
-- **Simple OLED**: Shows only patient name (centered) + step count (large font)
+**Motor Config**: 20kHz PWM, 8-bit resolution, 974ms for 90-degree turn, 1980ms for 180-degree turn
 
-**OLED Display States:**
-```
-[IDLE]                    [SESSION]
-+------------------+      +------------------+
-|   BIPED ROBOT    |      |  Nguyen Van A    |  <- Patient name
-|------------------|      |------------------|  
-| San sang su dung |      |      12345       |  <- Steps (large)
-| Quet the bat dau |      |       buoc       |
-+------------------+      +------------------+
-```
+**Line Follower PID**: KP=0.35, KI=0.0, KD=0.20, max correction 180
 
-**API Endpoints Used:**
-```
-GET  /api/patients/by-card/:cardNumber  # Lookup patient by RFID
-POST /api/biped/session/start           # Start rehabilitation session
-PUT  /api/biped/session/:id/step        # Update step count
-POST /api/biped/session/:id/end         # End session
-POST /api/biped/location                # Report checkpoint location
-```
+### ESP-NOW Messages
 
-## Carry Robot Firmware (`Carry_robot/`)
+| Struct | Direction | Content |
+|--------|-----------|---------|
+| `MasterToSlaveMsg` | Master -> Slave | state, vX/vY/vR, enableLine, enableRFID, turnCmd, baseSpeed, missionStart/Cancel, startReturn |
+| `SlaveToMasterMsg` | Slave -> Master | rfid_uid, rfid_new, line_detected, sync_docking, lineError, lineBits, turnDone, missionStatus, routeIndex/Total/Segment |
+| `MasterToSlaveRouteChunk` | Master -> Slave | Route points in chunks of 4 (nodeId + uid + action per point) |
 
-### Key Patterns
-- **State Machine** ([StateMachine.h](Carry_robot/src/StateMachine.h)): `STATE_IDLE_AT_MED` → `STATE_WAIT_CARGO` → `STATE_RUN_OUTBOUND` → `STATE_WAIT_AT_DEST` → `STATE_RUN_RETURN`
-- **Config-driven**: All pins, constants, and NFC UIDs defined in [config.h](Carry_robot/src/config.h)
-- **Modular components**: Each feature isolated (`MecanumDrive`, `GyroTurn`, `NFCReader`, `ObstacleDetector`, `FollowMode`)
-- **Robot modes**: `MODE_AUTO` (NFC navigation), `MODE_MANUAL` (RF remote), `MODE_FOLLOW` (AprilTag tracking via ESP32-CAM)
+### NFC Node Naming
+`MED` (home), `H_MED`/`H_BOT`/`H_TOP` (hallway), `J1`-`J4` (junctions), `R{1-4}M{1-3}` (M-side beds), `R{1-4}O{1-3}` (O-side beds), `R{1-4}D{1-2}` (doors)
 
-### Hardware Pin Mapping (ESP32 DevKit 38-pin)
-- I2C (shared): SDA=21, SCL=22 (OLED SH1106 + VL53L0X + MPU6050)
-- SPI (NFC): SCK=18, MISO=19, MOSI=23, SS=5
-- Motors: L298N LEFT (EN=17, FL=32/33, RL=25/26), RIGHT (EN=16, FR=27/14, RR=13/4)
-- **Warning**: GPIO 1,3 (TX/RX) used for ultrasonics - disconnect when flashing
-
-### NFC Checkpoint System
-UIDs are hard-coded in `CHECKPOINT_TABLE[]` in config.h. Node naming: `MED`, `H_MED`, `H_BOT`, `H_TOP`, `J4`, `R{1-4}M{1-3}`, `R{1-4}O{1-3}`, `R{1-4}D{1-2}`
-
-### Build Commands
+### Build
 ```bash
-cd Carry_robot
-pio run                    # Build
-pio run -t upload          # Flash
-pio device monitor         # Serial monitor (115200 baud)
+pio run -d CarryRobot/carry_master
+pio run -d CarryRobot/carry_slave
+pio run -d CarryRobot/carry_master -t upload --upload-port COM15
+pio run -d CarryRobot/carry_slave -t upload --upload-port COM13
 ```
 
-## Backend API (Express.js + MongoDB)
+## Hospital Dashboard
 
-### Route Structure
-| Endpoint | Purpose |
-|----------|---------|
-| `/api/robots/:id/telemetry` | Robot heartbeat (PUT) |
-| `/api/missions/next/:robotId` | Poll for pending mission |
-| `/api/missions/:id/progress` | Update mission progress |
-| `/api/patients` | Patient CRUD with photo uploads || `/api/patients/by-card/:cardNumber` | Lookup patient by RFID card || `/api/maps` | Graph-based floor maps |
-| `/api/biped/session/*` | Biped rehabilitation sessions |
-| `/api/biped/location` | Biped checkpoint location report |
+### Backend (`Hospital Dashboard/Backend/`)
 
-### BipedSession Schema
-```javascript
-{
-  sessionId: String,        // Unique session ID
-  robotId: String,          // Biped robot ID
-  userId: String,           // RFID user ID
-  userName: String,         // Display name
-  patientId: String,        // Linked patient
-  startTime: Date,          // Session start
-  endTime: Date,            // Session end
-  totalSteps: Number,       // Step count from Walking ESP32
-  duration: Number,         // Minutes
-  status: 'active' | 'completed' | 'interrupted',
-  telemetry: {
-    avgHeartRate, maxHeartRate, minHeartRate,
-    caloriesBurned, distanceWalked
-  }
-}
-```
+Express.js + MongoDB + MQTT. Port 3000. ES Modules.
 
-### Key Models
-- `Robot` - tracks status, battery, location (type: `carry` or `biped`)
-- `TransportMission` - full route with `outboundRoute[]` and `returnRoute[]`
-- `BipedSession` - rehabilitation session (user, steps, duration)
-- `MapGraph` - nodes/edges for pathfinding
+**Dependencies**: express, mongoose, mqtt, cors, dotenv, multer
 
-### Conventions
-- Robot types: `carry`, `biped`
-- Robot status values: `idle`, `busy`, `charging`, `maintenance`, `offline`, `low_battery`, `follow`, `manual`, `waiting`
-- Bed ID format: `R{room}{M|O}{1-3}` (e.g., `R1M2` = Room 1, M-side, bed 2)
+**Models**: Robot, TransportMission, Patient, Alert, MapGraph, User, Event, Prescription, PatientNote, PatientTimeline, ChargingStation
 
-## Frontend (React + Vite + TypeScript)
+**Routes**:
 
-### Structure
-- `src/app/api/` - API service layer (mirrors backend routes)
-- `src/app/components/` - Feature components (`PatientDashboard`, `RobotManagement`, `BedMap`)
-- `src/app/types/` - TypeScript interfaces (`robot.ts`, `patient.ts`)
+| Route | Purpose |
+|-------|---------|
+| `/api/patients` | Patient CRUD, photo upload, timeline, prescriptions, notes |
+| `/api/patients/by-card/:cardNumber` | RFID lookup |
+| `/api/robots/:id/telemetry` | Robot heartbeat (PUT, upsert) |
+| `/api/robots/carry/status` | Online carry robots (15s threshold) |
+| `/api/missions/delivery` | Create delivery mission (compute route + MQTT publish) |
+| `/api/missions/carry/:id/cancel` | Cancel mission |
+| `/api/missions/transport` | List transport missions |
+| `/api/maps` | Floor map CRUD, Dijkstra routing |
+| `/api/alerts` | System alerts |
+| `/api/users` | RFID user management |
+| `/api/events` | Button event logging |
+
+**Mission Route**: Hard-coded paths in `missions.js` (`buildHardRouteNodeIds()`, `roomProfile()`, `actionsForLeg()`). Rooms 1/3 are left-side, rooms 2/4 are right-side.
+
+**MQTT Service** (`mqttService.js`): Subscribes to telemetry/progress/complete/returned/position topics. Publishes mission/assign, mission/cancel, return_route, command. Computes return routes via `buildReturnPath()`.
+
+**Bed ID format**: `R{room}{M|O}{1-3}` (canonical). Also accepts legacy `R1-Bed1` format.
+
+### Frontend (`Hospital Dashboard/Frontend/`)
+
+React + Vite + TypeScript + Tailwind CSS + shadcn/ui. Port 5173 (proxies `/api` to backend).
+
+**Structure**:
+- `src/app/api/` — API service layer
+- `src/app/components/` — PatientDashboard, RobotCenter, BedMap, RobotManagement, RobotHistory, PatientForm, PatientDetails
+- `src/app/types/` — TypeScript interfaces
+- `src/app/hooks/` — Custom hooks (usePatients, useRobots, useAlerts, useMissions)
+- `src/app/contexts/` — RFID context (Web Serial API)
+
+**Features**: Patient management with photo/RFID, 4-room bed map (24 beds), carry robot monitoring, delivery mission control, biped robot status display, alert system
 
 ### Start Development
 ```bash
 cd "Hospital Dashboard"
-# Option 1: Use batch script
-start-servers.bat
-
-# Option 2: Manual
 cd Backend && npm run dev    # Port 3000
-cd Frontend && npm run dev   # Port 5173 (proxies /api to backend)
+cd Frontend && npm run dev   # Port 5173
 ```
 
-## Common Tasks
+### Seed Database
+```bash
+cd "Hospital Dashboard/Backend"
+node seed/seedMap.js         # Creates floor1 map with 37 nodes
+```
 
-### Adding a New NFC Checkpoint
-1. Add entry to `CHECKPOINT_TABLE[]` in [config.h](Carry_robot/src/config.h)
-2. Update `MapGraph` in MongoDB via seed script or API
-
-### Adding New Carry Robot Feature
-1. Create `FeatureName.h/cpp` in `Carry_robot/src/`
-2. Include in `main.cpp`, add timing variable if needed
-3. Integrate with `StateMachine` if affects mission flow
-
-### Adding New Biped Servo/Gait
-1. Update servo indices in [config.h](BipedRobot/config.h)
-2. Modify [Kinematics.h](BipedRobot/Kinematics.h) for leg position calculations
-3. Tune PID gains in config.h for balance
-
-### Modifying Mission Routes
-Routes are computed in [missions.js](Hospital%20Dashboard/Backend/src/routes/missions.js) using `buildAdj()` for graph traversal. Hard-coded routes exist for the 4-room hospital layout.
-
-## Critical Notes
-
-- **Never use GPIO 1/3** for peripherals during development (serial conflict)
-- **Motor gain tuning**: `LEFT_GAIN`/`RIGHT_GAIN` in config.h for straight-line correction
-- **Gyro calibration**: 500 samples at startup - robot must be stationary
-- **API base URL**: Stored in NVS, configurable via WiFiManager portal
+### MQTT Broker (Mosquitto)
+Port 1883. Users: `hospital_robot` (ESP32), `hospital_backend` (Backend). Password: `123456`.

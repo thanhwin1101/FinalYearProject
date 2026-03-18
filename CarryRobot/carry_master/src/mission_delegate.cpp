@@ -1,5 +1,3 @@
-/*  mission_delegate.cpp  –  Send routes to Slave via ESP-NOW; start mission on SW+MED
- */
 #include <Arduino.h>
 #include <string.h>
 #include "mission_delegate.h"

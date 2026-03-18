@@ -1,20 +1,11 @@
-/*  mecanum.cpp  –  4-wheel Mecanum drive via 2× L298N
- *
- *  Inverse kinematics:
- *    FL = vX + vY + vR
- *    FR = vX - vY - vR
- *    BL = vX - vY + vR
- *    BR = vX + vY - vR
- */
 #include "mecanum.h"
 #include "config.h"
 
-/* ─── Motor pin arrays for cleaner code ─── */
 struct MotorPins {
-    uint8_t en;     // PWM enable pin
-    uint8_t in1;    // Direction pin A
-    uint8_t in2;    // Direction pin B
-    uint8_t ch;     // LEDC channel
+    uint8_t en;
+    uint8_t in1;
+    uint8_t in2;
+    uint8_t ch;
 };
 
 static const MotorPins FL = {L1_ENA, L1_IN1, L1_IN2, CH_FL};
@@ -24,7 +15,6 @@ static const MotorPins BR_MOTOR = {L2_ENB, L2_IN3, L2_IN4, CH_BR};
 
 static const MotorPins motors[4] = {FL, BL, FR, BR_MOTOR};
 
-/* ─── Apply speed to a single motor ─── */
 static void setMotor(const MotorPins &m, float speed) {
     int16_t spd = (int16_t)constrain(speed, -255.0f, 255.0f);
     if (spd > 0) {
@@ -41,7 +31,6 @@ static void setMotor(const MotorPins &m, float speed) {
     ledcWrite(m.ch, (uint8_t)spd);
 }
 
-/* ─── Init ─── */
 void mecanumInit() {
     for (int i = 0; i < 4; i++) {
         pinMode(motors[i].in1, OUTPUT);
@@ -54,14 +43,12 @@ void mecanumInit() {
     Serial.println(F("[MECANUM] 4 motors init OK"));
 }
 
-/* ─── Drive ─── */
 void mecanumDrive(float vX, float vY, float vR) {
     float fl = vX + vY + vR;
     float fr = vX - vY - vR;
     float bl = vX - vY + vR;
     float br = vX + vY - vR;
 
-    // Normalise if any motor exceeds 255
     float maxVal = max(max(fabsf(fl), fabsf(fr)), max(fabsf(bl), fabsf(br)));
     if (maxVal > 255.0f) {
         float scale = 255.0f / maxVal;
@@ -92,24 +79,23 @@ void mecanumHardBrake(uint8_t pwm, uint16_t brakeMs) {
     mecanumStop();
 }
 
-/* ─── Timed turns ─── */
 void mecanumTurnLeft90() {
     mecanumHardBrake();
-    mecanumDrive(0, 0, -TURN_PWM);     // CCW
+    mecanumDrive(0, 0, -TURN_PWM);
     delay(TURN_90_MS);
     mecanumStop();
 }
 
 void mecanumTurnRight90() {
     mecanumHardBrake();
-    mecanumDrive(0, 0, TURN_PWM);      // CW
+    mecanumDrive(0, 0, TURN_PWM);
     delay(TURN_90_MS);
     mecanumStop();
 }
 
 void mecanumUturn() {
     mecanumHardBrake();
-    mecanumDrive(0, 0, TURN_PWM);      // CW 180°
+    mecanumDrive(0, 0, TURN_PWM);
     delay(TURN_180_MS);
     mecanumStop();
 }

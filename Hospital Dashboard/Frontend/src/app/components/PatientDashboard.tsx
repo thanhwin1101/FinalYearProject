@@ -37,22 +37,19 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [sortOption, setSortOption] = useState<SortOption>('bed');
 
-  // Get unique doctors and departments for filters
-  const doctors = useMemo(() => 
+  const doctors = useMemo(() =>
     Array.from(new Set(patients.map(p => p.primaryDoctor))).filter(Boolean),
     [patients]
   );
 
-  const departments = useMemo(() => 
+  const departments = useMemo(() =>
     Array.from(new Set(patients.map(p => p.department))).filter(Boolean),
     [patients]
   );
 
-  // Filter and sort patients
   const filteredPatients = useMemo(() => {
     let result = [...patients];
 
-    // Quick search
     if (filters.quickSearch) {
       const search = filters.quickSearch.toLowerCase();
       result = result.filter(p =>
@@ -64,22 +61,18 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
       );
     }
 
-    // Status filter
     if (filters.status) {
       result = result.filter(p => p.status === filters.status);
     }
 
-    // Doctor filter
     if (filters.primaryDoctor) {
       result = result.filter(p => p.primaryDoctor === filters.primaryDoctor);
     }
 
-    // Department filter
     if (filters.department) {
       result = result.filter(p => p.department === filters.department);
     }
 
-    // Date range filter
     if (filters.dateFrom) {
       result = result.filter(p => p.admissionDate >= filters.dateFrom);
     }
@@ -87,7 +80,6 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
       result = result.filter(p => p.admissionDate <= filters.dateTo);
     }
 
-    // Sort based on selected option
     switch (sortOption) {
       case 'name-asc':
         result.sort((a, b) => a.fullName.localeCompare(b.fullName));
@@ -159,11 +151,11 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
 
   return (
     <div className="space-y-8">
-      {/* Search & Filtering System */}
+      {}
       <div className="bg-white p-8 rounded-xl shadow-sm border">
         <h2 className="text-2xl font-semibold mb-6">Search & Filters</h2>
-        
-        {/* Quick Search */}
+
+        {}
         <div className="space-y-6">
           <div className="space-y-3">
             <Label htmlFor="quickSearch" className="text-base font-medium">Quick Search</Label>
@@ -179,7 +171,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
             </div>
           </div>
 
-          {/* Advanced Filters */}
+          {}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div className="space-y-3">
               <Label htmlFor="status" className="text-base font-medium">Patient Status</Label>
@@ -227,9 +219,9 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
             </div>
           </div>
 
-          {/* Date Range and Action Buttons */}
+          {}
           <div className="flex items-end justify-between">
-            {/* Date Range - Left side */}
+            {}
             <div className="flex gap-3 items-end">
               <div className="space-y-1">
                 <Label className="text-sm font-medium">From</Label>
@@ -265,7 +257,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
               </div>
             </div>
 
-            {/* Action Buttons - Right side */}
+            {}
             <div className="flex gap-3 items-center">
               <Button onClick={handleResetFilters} variant="outline" size="default" className="text-sm">
                 <RotateCcw className="w-4 h-4 mr-2" />
@@ -284,7 +276,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
         </div>
       </div>
 
-      {/* Patient List Display */}
+      {}
       <div className="bg-white rounded-xl shadow-sm border">
         <div className="p-4 border-b flex items-center justify-between">
           <div>
@@ -307,7 +299,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
             </select>
           </div>
         </div>
-        
+
         <div className="overflow-x-auto">
           <Table className="table-fixed w-full patient-list-table">
             <TableHeader>
@@ -402,7 +394,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
         </div>
       </div>
 
-      {/* Patient Form Dialog */}
+      {}
       <PatientForm
         isOpen={isFormOpen}
         onClose={() => {
@@ -414,7 +406,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
         existingPatients={patients}
       />
 
-      {/* Patient Details Dialog */}
+      {}
       <PatientDetails
         patient={selectedPatient}
         isOpen={isDetailsOpen}

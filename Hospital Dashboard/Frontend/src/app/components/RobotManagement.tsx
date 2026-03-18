@@ -4,7 +4,7 @@ import { Button } from '@/app/components/ui/button';
 import { Badge } from '@/app/components/ui/badge';
 import { Robot, RobotStatus } from '@/app/types/robot';
 import { Patient } from '@/app/types/patient';
-import { DeliveryHistoryTable, BipedHistoryTable, DeliveryHistory, BipedUsageHistory } from './RobotHistory';
+import { DeliveryHistoryTable, DeliveryHistory } from './RobotHistory';
 
 interface RobotManagementProps {
   robots: Robot[];
@@ -13,25 +13,20 @@ interface RobotManagementProps {
   onCancelTask: (missionId: string) => void;
   activeMission?: { patientId: string; robotId?: string; missionId?: string } | null;
   deliveryHistory?: DeliveryHistory[];
-  bipedHistory?: BipedUsageHistory[];
 }
 
-type BipedTab = 'status' | 'history';
 type CarryTab = 'status' | 'history';
 
-export function RobotManagement({ 
-  robots, 
-  selectedPatient, 
-  onSendRobot, 
+export function RobotManagement({
+  robots,
+  selectedPatient,
+  onSendRobot,
   onCancelTask,
   activeMission,
-  deliveryHistory = [],
-  bipedHistory = []
+  deliveryHistory = []
 }: RobotManagementProps) {
-  const [bipedTab, setBipedTab] = useState<BipedTab>('status');
   const [carryTab, setCarryTab] = useState<CarryTab>('status');
-  
-  const bipedRobots = robots.filter(r => r.type === 'Biped');
+
   const carryRobots = robots.filter(r => r.type === 'Carry');
 
   const getStatusBadge = (status: RobotStatus) => {
@@ -55,15 +50,15 @@ export function RobotManagement({
     <div className="space-y-4 h-full flex flex-col">
       <h2 className="text-xl font-semibold text-gray-900">Robot Fleet Status</h2>
 
-      {/* Top Section - Patient Info & Send Button */}
+      {}
       <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-lg p-4 min-h-[140px]">
         {selectedPatient ? (
           <div className="flex items-center justify-between h-full">
             <div className="flex items-center gap-4">
               <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
                 {selectedPatient.photo ? (
-                  <img 
-                    src={selectedPatient.photo} 
+                  <img
+                    src={selectedPatient.photo}
                     alt={selectedPatient.fullName}
                     className="w-16 h-16 rounded-full object-cover"
                   />
@@ -125,94 +120,10 @@ export function RobotManagement({
         )}
       </div>
 
-      {/* Bottom Section - Robot Tables */}
-      <div className="flex-1 grid grid-cols-2 gap-4 min-h-[620px]">
-        {/* Left - Biped Robot Table */}
-        <div className="border rounded-lg overflow-hidden">
-          <div className="bg-blue-600 text-white px-4 py-2 font-semibold flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🚶</span>
-              Biped Robot
-            </div>
-            <div className="flex gap-1">
-              <button
-                onClick={() => setBipedTab('status')}
-                className={`px-3 py-1 rounded text-sm transition-colors ${
-                  bipedTab === 'status' 
-                    ? 'bg-white text-blue-600' 
-                    : 'bg-blue-500 text-white hover:bg-blue-400'
-                }`}
-              >
-                <List className="w-4 h-4 inline mr-1" />
-                Status
-              </button>
-              <button
-                onClick={() => setBipedTab('history')}
-                className={`px-3 py-1 rounded text-sm transition-colors ${
-                  bipedTab === 'history' 
-                    ? 'bg-white text-blue-600' 
-                    : 'bg-blue-500 text-white hover:bg-blue-400'
-                }`}
-              >
-                <History className="w-4 h-4 inline mr-1" />
-                History
-              </button>
-            </div>
-          </div>
-          
-          {bipedTab === 'status' ? (
-            <div className="overflow-auto max-h-[280px]">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-100 sticky top-0">
-                  <tr>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">No.</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Device ID</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Status</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Current User</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Steps</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Battery</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bipedRobots.length > 0 ? (
-                    bipedRobots.map((robot, index) => (
-                      <tr key={robot.id} className="border-t hover:bg-gray-50">
-                        <td className="px-2 py-2 text-gray-900">{index + 1}</td>
-                        <td className="px-2 py-2 font-medium text-gray-900">{robot.id}</td>
-                        <td className="px-2 py-2">{getStatusBadge(robot.status)}</td>
-                        <td className="px-2 py-2 text-gray-900">
-                          {robot.assignedPatientId || '-'}
-                        </td>
-                        <td className="px-2 py-2 text-gray-900">
-                          {(robot as any).stepCount || 0}
-                        </td>
-                        <td className="px-2 py-2">
-                          <div className="flex items-center gap-1">
-                            <Battery className={`w-4 h-4 ${getBatteryColor(robot.batteryLevel)}`} />
-                            <span className={getBatteryColor(robot.batteryLevel)}>
-                              {robot.batteryLevel}%
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  ) : (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
-                        No Biped Robot available
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <BipedHistoryTable history={bipedHistory} />
-          )}
-        </div>
-
-        {/* Right - Carry Robot Table */}
-        <div className="border rounded-lg overflow-hidden">
+      {}
+      <div className="flex-1 min-h-[620px]">
+        {}
+        <div className="border rounded-lg overflow-hidden h-full">
           <div className="bg-green-600 text-white px-4 py-2 font-semibold flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-xl">🤖</span>
@@ -222,8 +133,8 @@ export function RobotManagement({
               <button
                 onClick={() => setCarryTab('status')}
                 className={`px-3 py-1 rounded text-sm transition-colors ${
-                  carryTab === 'status' 
-                    ? 'bg-white text-green-600' 
+                  carryTab === 'status'
+                    ? 'bg-white text-green-600'
                     : 'bg-green-500 text-white hover:bg-green-400'
                 }`}
               >
@@ -233,8 +144,8 @@ export function RobotManagement({
               <button
                 onClick={() => setCarryTab('history')}
                 className={`px-3 py-1 rounded text-sm transition-colors ${
-                  carryTab === 'history' 
-                    ? 'bg-white text-green-600' 
+                  carryTab === 'history'
+                    ? 'bg-white text-green-600'
                     : 'bg-green-500 text-white hover:bg-green-400'
                 }`}
               >
@@ -243,7 +154,7 @@ export function RobotManagement({
               </button>
             </div>
           </div>
-          
+
           {carryTab === 'status' ? (
             <div className="overflow-auto max-h-[280px]">
               <table className="w-full text-sm">

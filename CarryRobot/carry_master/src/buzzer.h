@@ -1,10 +1,8 @@
-/*  buzzer.h  –  Simple buzzer helpers (header-only)
- */
 #pragma once
 #include <Arduino.h>
 #include "config.h"
 
-#define BUZZER_CH  2          // LEDC channel
+#define BUZZER_CH  2
 
 inline void buzzerInit() {
     ledcSetup(BUZZER_CH, 2200, 8);

@@ -12,20 +12,18 @@ const chargingStationSchema = new mongoose.Schema({
       y: { type: Number, required: true }
     }
   },
-  
-  capacity: { type: Number, default: 4 }, // Số robot sạc cùng lúc
+
+  capacity: { type: Number, default: 4 },
   availableSlots: { type: Number, default: 4 },
-  status: { 
-    type: String, 
+  status: {
+    type: String,
     enum: ['active', 'maintenance', 'full', 'offline'],
     default: 'active'
   },
-  
-  // Thống kê
+
   totalCharges: { type: Number, default: 0 },
-  averageChargingTime: { type: Number, default: 0 }, // phút
-  
-  // Robot đang sạc
+  averageChargingTime: { type: Number, default: 0 },
+
   chargingRobots: [{
     robotId: { type: String },
     startedAt: { type: Date },
@@ -33,15 +31,14 @@ const chargingStationSchema = new mongoose.Schema({
     initialBattery: { type: Number },
     targetBattery: { type: Number, default: 100 }
   }],
-  
-  // Lịch sử
+
   chargingHistory: [{
     robotId: String,
     startedAt: Date,
     completedAt: Date,
     batteryBefore: Number,
     batteryAfter: Number,
-    duration: Number // phút
+    duration: Number
   }]
 }, { timestamps: true });
 

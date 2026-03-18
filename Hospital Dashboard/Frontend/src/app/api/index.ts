@@ -1,8 +1,6 @@
-// Re-export all API modules
 export * from './config';
 export * from './http';
 
-// API Services
 export * as patientsApi from './patients';
 export * as robotsApi from './robots';
 export * as missionsApi from './missions';
@@ -11,7 +9,6 @@ export * as alertsApi from './alerts';
 export * as usersApi from './users';
 export * as eventsApi from './events';
 
-// Also export individual functions for convenience
 export {
   getPatients,
   getPatientById,
@@ -30,9 +27,7 @@ export {
 
 export {
   getCarryRobotsStatus,
-  getBipedRobotsStatus,
   updateRobotTelemetry,
-  getAllRobots,
 } from './robots';
 
 export {

@@ -5,7 +5,6 @@ export function dailyCountPipeline({ uid, from, to }) {
     match.at = {};
     if (from) match.at.$gte = new Date(from);
     if (to) {
-      // to inclusive đến hết ngày
       const end = new Date(to);
       end.setHours(23,59,59,999);
       match.at.$lte = end;

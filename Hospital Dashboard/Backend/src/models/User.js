@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema({
-  uid: { type: String, unique: true, required: true }, // UID thẻ RFID (in hoa)
+  uid: { type: String, unique: true, required: true },
   name: { type: String, required: true },
   email: { type: String }
 }, { timestamps: true });

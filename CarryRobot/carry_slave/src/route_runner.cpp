@@ -1,5 +1,3 @@
-/*  route_runner.cpp  –  Slave autonomous mission FSM
- */
 #include "route_runner.h"
 #include "config.h"
 #include "globals.h"
@@ -9,7 +7,6 @@
 #include "rfid_reader.h"
 #include <string.h>
 
-// Same UID map as Master (nodeId <-> RFID UID)
 struct UidEntry { const char* nodeId; const char* uid; };
 static const UidEntry UID_MAP[] = {
     {"MED",   "45:54:80:83"},
@@ -38,7 +35,6 @@ static const UidEntry* uidLookup(const char* uid) {
     return nullptr;
 }
 
-// Route point (fixed-size for storage)
 struct SlRoutePoint {
     char nodeId[ROUTE_POINT_NODE_LEN];
     char uid[ROUTE_POINT_UID_LEN];
@@ -53,16 +49,16 @@ static uint8_t s_outIdx = 0, s_retIdx = 0;
 enum SlState {
     SL_IDLE,
     SL_OUTBOUND,
-    SL_AT_DEST_UTURN,   // at dest: do 180° then wait line before WAIT_AT_DEST
-    SL_WAIT_AT_DEST,    // wait for Master startReturn (SW at dest)
+    SL_AT_DEST_UTURN,
+    SL_WAIT_AT_DEST,
     SL_BACK,
-    SL_AT_MED_UTURN     // at MED: do 180° then report BACK
+    SL_AT_MED_UTURN
 };
 static SlState s_state = SL_IDLE;
 static bool s_turnBusy = false;
 static unsigned long s_waitAtDestStartMs = 0;
 static bool s_startReturnRequested = false;
-static uint8_t s_destUturnStep = 0;       // 0=do turn, 1=wait line
+static uint8_t s_destUturnStep = 0;
 static unsigned long s_destUturnStartMs = 0;
 static const unsigned long LINE_REACQUIRE_MS = 500;
 static char s_lastMatchedUid[ROUTE_POINT_UID_LEN];
@@ -154,7 +150,6 @@ bool routeRunnerMissionActive() {
 void routeRunnerUpdate() {
     const unsigned long now = millis();
 
-    // Report status to Master (ongoing: index/total; complete/back one-shot handled below)
     if (s_state == SL_OUTBOUND) {
         slaveReport.missionStatus = SL_MISSION_STATUS_ONGOING;
         slaveReport.routeIndex = s_outIdx;
@@ -221,7 +216,6 @@ void routeRunnerUpdate() {
             uint8_t len = (s_state == SL_OUTBOUND) ? s_outLen : s_retLen;
             uint8_t* idx = (s_state == SL_OUTBOUND) ? &s_outIdx : &s_retIdx;
 
-            // Next checkpoint we need to match
             if (*idx + 1 >= len) {
                 if (s_state == SL_OUTBOUND) {
                     s_state = SL_AT_DEST_UTURN;
@@ -236,7 +230,6 @@ void routeRunnerUpdate() {
             const char* expectedUid = route[*idx + 1].uid;
             char act = route[*idx + 1].action;
 
-            // Check RFID
             if (slaveReport.rfid_new && slaveReport.rfid_uid[0] != '\0') {
                 if (now - s_lastRfidMs < RFID_DEBOUNCE_MS) return;
                 if (strcasecmp(slaveReport.rfid_uid, expectedUid) == 0) {

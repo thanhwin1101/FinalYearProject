@@ -1,5 +1,3 @@
-/*  globals.cpp  –  Slave ESP32 global state definitions
- */
 #include "globals.h"
 
 volatile MasterToSlaveMsg masterCmd    = {};

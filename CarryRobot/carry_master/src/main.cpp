@@ -1,15 +1,11 @@
-/*  main.cpp  –  Master ESP32 entry point
- *
- *  Carry Robot – Dual-ESP32 architecture
- *  Master handles: HuskyLens, OLED, ToF, Ultrasonics, Servos,
- *                  Buzzer, Switch, WiFi/MQTT, ESP-NOW (→ Slave)
- */
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "globals.h"
 #include "config.h"
 #include "buzzer.h"
@@ -22,17 +18,15 @@
 #include "route_manager.h"
 #include "state_machine.h"
 
-// ─── Button debounce ───
 static unsigned long     btnDownMs      = 0;
 static unsigned long     btnUpMs        = 0;
-static unsigned long     lastClickReleaseMs = 0;  // for double-click detection
-static bool              btnRawState    = false;  // true = pressed
+static unsigned long     lastClickReleaseMs = 0;
+static bool              btnRawState    = false;
 static bool              btnStableState = false;
 static unsigned long     btnDebounceMs  = 0;
 static bool              longPressFired = false;
 static unsigned long     lastSwRawLogMs = 0;
 
-// Logical "pressed": active-low => LOW is pressed, active-high => HIGH is pressed.
 static inline bool swPinPressed(int rawLevel) {
     return (rawLevel == (SW_ACTIVE_LOW ? LOW : HIGH));
 }
@@ -77,13 +71,21 @@ static void saveMqttServer(const char* host) {
     prefs.end();
 }
 
-// WiFi reconnect watchdog + fast ESP-NOW beacon window for rapid slave relock.
 static bool          wifiWasConnected = false;
 static unsigned long lastWifiCheckMs = 0;
 static unsigned long fastBeaconUntilMs = 0;
 static unsigned long lastFastBeaconMs = 0;
 
 static void startFastRelockBeaconWindow();
+
+// ======================= FreeRTOS Tasks =======================
+static TaskHandle_t hTaskComm    = nullptr;
+static TaskHandle_t hTaskSensors = nullptr;
+static TaskHandle_t hTaskLogic   = nullptr;
+
+static void Task_Communication(void* arg);
+static void Task_Sensors(void* arg);
+static void Task_Logic(void* arg);
 
 static void processButton() {
     const unsigned long now = millis();
@@ -102,14 +104,12 @@ static void processButton() {
         btnDebounceMs = now;
     }
 
-    // Wait until input is stable for debounce window.
     if ((now - btnDebounceMs) < DEBOUNCE_MS) {
         return;
     }
 
-    // No stable edge.
     if (btnStableState == btnRawState) {
-        // Fire long-press while still holding the button for better UX.
+
         if (btnStableState && !longPressFired && (now - btnDownMs) >= LONG_PRESS_MS) {
             longPressFired = true;
             Serial.println(F("[BTN] Long press"));
@@ -121,10 +121,9 @@ static void processButton() {
         return;
     }
 
-    // Stable edge detected.
     btnStableState = btnRawState;
 
-    if (btnStableState) {  // pressed
+    if (btnStableState) {
         btnDownMs = now;
         longPressFired = false;
         Serial.println(F("[BTN] Pressed"));
@@ -134,7 +133,6 @@ static void processButton() {
         return;
     }
 
-    // Released edge.
     btnUpMs = now;
     const unsigned long held = btnUpMs - btnDownMs;
     Serial.printf("[BTN] Released after %lu ms\n", held);
@@ -143,7 +141,7 @@ static void processButton() {
 #endif
 
     if (longPressFired || held >= LONG_PRESS_MS) {
-        // Already handled (or safety net if hold threshold hit exactly on release).
+
         longPressFired = false;
         return;
     }
@@ -152,7 +150,6 @@ static void processButton() {
         return;
     }
 
-    // Double-click: second release within DOUBLE_CLICK_MS of previous release
     const bool isDoubleClick = (now - lastClickReleaseMs) <= DOUBLE_CLICK_MS;
     lastClickReleaseMs = now;
 
@@ -171,7 +168,6 @@ static void processButton() {
     }
 }
 
-// ─── Process incoming Slave message ───
 static uint8_t lastProgressIndex = 0xFF;
 static uint8_t lastProgressSegment = 0xFF;
 
@@ -179,10 +175,9 @@ static void processSlaveMsg() {
     if (!slaveMsgNew) return;
     slaveMsgNew = false;
 
-    // Relay Slave autonomous mission status to MQTT
     if (robotState == ST_MISSION_DELEGATED) {
         const uint8_t st = slaveMsg.missionStatus;
-        if (st == 1) {  // ongoing – throttle: only send progress when index or segment changes
+        if (st == 1) {
             if (slaveMsg.routeIndex != lastProgressIndex || slaveMsg.routeSegment != lastProgressSegment) {
                 lastProgressIndex = slaveMsg.routeIndex;
                 lastProgressSegment = slaveMsg.routeSegment;
@@ -194,12 +189,12 @@ static void processSlaveMsg() {
                 }
                 mqttSendProgress(missionId.c_str(), nodeId, slaveMsg.routeIndex, slaveMsg.routeTotal);
             }
-        } else if (st == 2) {  // complete at dest
+        } else if (st == 2) {
             mqttSendComplete(missionId.c_str());
             lastProgressIndex = 0xFF;
             lastProgressSegment = 0xFF;
-            smSetWaitingAtDest(true);  // wait for SW to start return
-        } else if (st == 3) {  // back at MED
+            smSetWaitingAtDest(true);
+        } else if (st == 3) {
             mqttSendReturned(missionId.c_str());
             lastProgressIndex = 0xFF;
             lastProgressSegment = 0xFF;
@@ -207,7 +202,6 @@ static void processSlaveMsg() {
         }
     }
 
-    // RFID / sync (for non-delegated states)
     if (robotState != ST_MISSION_DELEGATED) {
         if (slaveMsg.rfid_new && slaveMsg.rfid_uid[0] != '\0') {
             smOnSlaveRfid((const char*)slaveMsg.rfid_uid);
@@ -298,12 +292,10 @@ static void waitForSystemReady() {
         const bool slaveOk = espnowSlaveConnected();
         const bool allOk = wifiOk && mqttOk && slaveOk;
 
-        // Chỉ thoát khi đủ cả 3: WiFi + MQTT + Slave ổn định SYSTEM_READY_STABLE_MS.
-        // Không thoát sớm khi timeout với "partial links" (chỉ Slave) -> không vào IDLE thiếu link.
         if ((now - startMs) >= SYSTEM_READY_MAX_WAIT_MS && !allOk) {
             if (!slaveOk)
                 Serial.println(F("[BOOT] Ready timeout but slave missing -> keep waiting"));
-            // Nếu thiếu WiFi/MQTT: vẫn chờ, không return -> không vào màn hình IDLE.
+
         }
 
         if (allOk) {
@@ -337,37 +329,31 @@ static void waitForSystemReady() {
     }
 }
 
-// ================================================================
-//  setup()
-// ================================================================
 void setup() {
     Serial.begin(115200);
     Serial.println(F("\n=== Carry Robot – Master ESP32 ==="));
 
-    // ESP-NOW requires WiFi radio to be initialized first.
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(false, false);
-    // Use fixed channel 7 before connecting to AP so Slave (on channel 7) can link.
+
     esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-    // ESP-NOW first: initialize radio/link as early as possible.
     espnowMasterInit();
 
-    // GPIO
     pinMode(SW_PIN, INPUT_PULLUP);
     pinMode(SERVO_X_FB_PIN, INPUT);
 
-    // I2C
     Wire.begin(I2C_SDA, I2C_SCL);
 
-    // Hardware init
+    // Create I2C mutex before any OLED/ToF access
+    g_i2cMutex = xSemaphoreCreateMutex();
+
     buzzerInit();
     displayInit();
     sensorsInit();
     gimbalInit();
     huskyInit();
 
-    // Wait for slave packet before WiFi setup.
     waitForSlaveBeforeWiFi();
 
     const bool requestPortal = shouldEnterWiFiPortalOnBoot();
@@ -377,7 +363,6 @@ void setup() {
     mqttSetServerHost(mqttServerHost);
     Serial.printf("[MQTT] Preferred broker: %s\n", mqttGetServerHost());
 
-    // WiFi (for MQTT)
     WiFiManager wm;
     wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT);
     wm.setConnectTimeout(25);
@@ -407,7 +392,7 @@ void setup() {
             }
         }
     } else {
-        // Normal boot: connect using default WiFi credentials.
+
         WiFi.mode(WIFI_STA);
         WiFi.begin(WIFI_DEFAULT_SSID, WIFI_DEFAULT_PASS);
         const unsigned long startMs = millis();
@@ -428,58 +413,94 @@ void setup() {
         wifiWasConnected = false;
     }
 
-    // Rebind ESP-NOW after WiFi init so peer follows current channel.
     espnowMasterInit();
     if (wifiWasConnected) {
-        // Speed up initial slave relock at boot.
+
         startFastRelockBeaconWindow();
     }
 
-    // MQTT
     mqttInit();
 
-    // Block here until WiFi/MQTT/Slave are all stable.
     waitForSystemReady();
 
-    // State machine
     smInit();
 
     buzzerStartup();
     Serial.println(F("=== Master setup complete ===\n"));
+
+    // Start FreeRTOS tasks
+    // Core allocation:
+    //   Core 0: Communication (WiFi/MQTT/ESP-NOW)
+    //   Core 1: Sensors + Logic (real-time)
+    xTaskCreatePinnedToCore(Task_Communication, "Task_Comm", 8192, nullptr, 2, &hTaskComm, 0);
+    xTaskCreatePinnedToCore(Task_Sensors,       "Task_Sensors", 4096, nullptr, 4, &hTaskSensors, 1);
+    xTaskCreatePinnedToCore(Task_Logic,         "Task_Logic",   8192, nullptr, 3, &hTaskLogic,   1);
+}
+
+void loop() {
+    // All work is done in FreeRTOS tasks.
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 // ================================================================
-//  loop()
+//  Task implementations
 // ================================================================
-void loop() {
-    // 1. MQTT
-    mqttLoop();
 
-    // 1.1 WiFi reconnect detection
-    monitorWiFiReconnect();
-    espnowMasterMaintainLink();
+// Core 0: WiFi + MQTT + ESP-NOW + telemetry
+static void Task_Communication(void* arg) {
+    (void)arg;
 
-    // 2. Button
-    processButton();
+    TickType_t lastWake = xTaskGetTickCount();
+    TickType_t lastEspNowTick = lastWake;
+    TickType_t lastTelemetryTick = lastWake;
 
-    // 3. Process Slave data
-    processSlaveMsg();
+    for (;;) {
+        // Keep MQTT alive and handle inbound commands
+        mqttLoop();
+        monitorWiFiReconnect();
+        espnowMasterMaintainLink();
+        sendFastRelockBeaconIfNeeded();
 
-    // 4. State machine update (includes obstacle, HuskyLens, drive logic)
-    smUpdate();
+        // 50ms: sync state/vel to Slave (ESP-NOW)
+        if ((xTaskGetTickCount() - lastEspNowTick) >= pdMS_TO_TICKS(50)) {
+            lastEspNowTick = xTaskGetTickCount();
+            masterMsg.state = (uint8_t)robotState;
+            espnowSendToSlave(masterMsg);
+        }
 
-    // 4.1 Temporary high-rate ESP-NOW beacon after WiFi reconnect.
-    sendFastRelockBeaconIfNeeded();
+        // 1000ms: telemetry to MQTT
+        if ((xTaskGetTickCount() - lastTelemetryTick) >= pdMS_TO_TICKS(1000)) {
+            lastTelemetryTick = xTaskGetTickCount();
+            mqttSendTelemetry(
+                (robotState == ST_IDLE) ? "idle" : "busy",
+                currentNodeIdLive.c_str(),
+                destBed.c_str()
+            );
+        }
 
-    // 5. Periodic telemetry
-    if (millis() - lastTelemetryMs >= TELEMETRY_INTERVAL) {
-        lastTelemetryMs = millis();
-        mqttSendTelemetry(
-            (robotState == ST_IDLE) ? "idle" : "busy",
-            currentNodeIdLive.c_str(),
-            destBed.c_str()
-        );
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(5));
     }
+}
 
-    delay(2);   // yield
+// Core 1: Read sensors every 50ms (ToF + 2x ultrasonic) into global cache
+static void Task_Sensors(void* arg) {
+    (void)arg;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;) {
+        sensorsUpdateCache50ms();
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(50));
+    }
+}
+
+// Core 1: Real-time logic (button + slave msg + state machine + Husky maintain)
+static void Task_Logic(void* arg) {
+    (void)arg;
+    TickType_t lastWake = xTaskGetTickCount();
+    for (;;) {
+        processButton();
+        processSlaveMsg();
+        huskyMaintain();
+        smUpdate();
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(10));
+    }
 }

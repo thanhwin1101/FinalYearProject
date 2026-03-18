@@ -14,7 +14,7 @@ export function ConnectionStatus({ className = '' }: ConnectionStatusProps) {
   useEffect(() => {
     const checkConnection = async () => {
       try {
-        // Simple health check - try to fetch patients meta
+
         await get(`${API_ENDPOINTS.patients}/meta`);
         setIsConnected(true);
       } catch {
@@ -23,10 +23,8 @@ export function ConnectionStatus({ className = '' }: ConnectionStatusProps) {
       setLastCheck(new Date());
     };
 
-    // Check immediately
     checkConnection();
 
-    // Check every 30 seconds
     const interval = setInterval(checkConnection, 30000);
 
     return () => clearInterval(interval);

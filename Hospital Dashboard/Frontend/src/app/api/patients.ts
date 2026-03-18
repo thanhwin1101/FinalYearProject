@@ -1,7 +1,6 @@
 import { API_ENDPOINTS } from './config';
 import { get, post, put, del, upload, uploadPut } from './http';
 
-// Backend Prescription interface
 export interface BackendPrescription {
   _id?: string;
   medication: string;
@@ -14,7 +13,6 @@ export interface BackendPrescription {
   status?: string;
 }
 
-// Backend Note interface
 export interface BackendNote {
   _id?: string;
   text: string;
@@ -22,7 +20,6 @@ export interface BackendNote {
   createdAt?: string;
 }
 
-// Backend Patient interface (matching backend model)
 export interface BackendPatient {
   _id: string;
   mrn: string;
@@ -46,7 +43,6 @@ export interface BackendPatient {
   updatedAt?: string;
 }
 
-// Create patient data interface
 export interface CreatePatientData {
   mrn: string;
   fullName: string;
@@ -78,7 +74,6 @@ export interface OccupancyInfo {
   beds: BedInfo[];
 }
 
-// Get all patients
 export async function getPatients(params?: {
   status?: string;
   department?: string;
@@ -88,31 +83,25 @@ export async function getPatients(params?: {
   return get<BackendPatient[]>(API_ENDPOINTS.patients, { params });
 }
 
-// Get patient by ID
 export async function getPatientById(id: string): Promise<BackendPatient> {
   return get<BackendPatient>(`${API_ENDPOINTS.patients}/${id}`);
 }
 
-// Get patient by MRN
 export async function getPatientByMrn(mrn: string): Promise<BackendPatient> {
   return get<BackendPatient>(`${API_ENDPOINTS.patients}/mrn/${mrn}`);
 }
 
-// Get patient by RFID card number
 export async function getPatientByCard(cardNumber: string): Promise<BackendPatient> {
   return get<BackendPatient>(`${API_ENDPOINTS.patients}/card/${cardNumber}`);
 }
 
-// Create new patient
 export async function createPatient(data: CreatePatientData): Promise<BackendPatient> {
   return post<BackendPatient>(API_ENDPOINTS.patients, data);
 }
 
-// Create patient with photo
 export async function createPatientWithPhoto(data: CreatePatientData, photo?: File): Promise<BackendPatient> {
   const formData = new FormData();
-  
-  // Add all data fields
+
   Object.entries(data).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
       if (Array.isArray(value)) {
@@ -122,25 +111,21 @@ export async function createPatientWithPhoto(data: CreatePatientData, photo?: Fi
       }
     }
   });
-  
-  // Add photo if provided
+
   if (photo) {
     formData.append('photo', photo);
   }
-  
+
   return upload<BackendPatient>(API_ENDPOINTS.patients, formData);
 }
 
-// Update patient
 export async function updatePatient(id: string, data: Partial<CreatePatientData>): Promise<BackendPatient> {
   return put<BackendPatient>(`${API_ENDPOINTS.patients}/${id}`, data);
 }
 
-// Update patient with photo
 export async function updatePatientWithPhoto(id: string, data: Partial<CreatePatientData>, photo?: File): Promise<BackendPatient> {
   const formData = new FormData();
-  
-  // Add all data fields
+
   Object.entries(data).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
       if (Array.isArray(value)) {
@@ -150,39 +135,33 @@ export async function updatePatientWithPhoto(id: string, data: Partial<CreatePat
       }
     }
   });
-  
-  // Add photo if provided
+
   if (photo) {
     formData.append('photo', photo);
   }
-  
+
   return uploadPut<BackendPatient>(`${API_ENDPOINTS.patients}/${id}`, formData);
 }
 
-// Delete patient
 export async function deletePatient(id: string): Promise<{ ok: boolean; message?: string }> {
   return del<{ ok: boolean; message?: string }>(`${API_ENDPOINTS.patients}/${id}`);
 }
 
-// Assign patient to bed
 export async function assignPatientToBed(id: string, bedId: string): Promise<BackendPatient> {
   return put<BackendPatient>(`${API_ENDPOINTS.patients}/${id}/bed`, { roomBed: bedId });
 }
 
-// Get all beds
 export async function getBeds(): Promise<BedInfo[]> {
   return get<BedInfo[]>(API_ENDPOINTS.patientsBeds);
 }
 
-// Get bed occupancy info
 export async function getOccupancy(): Promise<OccupancyInfo> {
   return get<OccupancyInfo>(API_ENDPOINTS.patientsOccupancy);
 }
 
-// Discharge patient
 export async function dischargePatient(id: string): Promise<BackendPatient> {
-  return put<BackendPatient>(`${API_ENDPOINTS.patients}/${id}`, { 
+  return put<BackendPatient>(`${API_ENDPOINTS.patients}/${id}`, {
     status: 'Discharged',
-    roomBed: null 
+    roomBed: null
   });
 }

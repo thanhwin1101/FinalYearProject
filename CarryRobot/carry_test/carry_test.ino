@@ -1,15 +1,3 @@
-/*
-  Carry Robot Motor Test - Web Control Version
-  
-  Features:
-  - Web interface for motor control
-  - Adjustable turn timing via web
-  - Real-time OLED display
-  - WiFiManager for easy setup
-  
-  Access: http://<robot_ip>/ after connecting to WiFi
-*/
-
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WiFiManager.h>
@@ -17,20 +5,16 @@
 #include <Wire.h>
 #include <U8g2lib.h>
 
-// =========================================
-// PINOUT
-// =========================================
 #define I2C_SDA 21
 #define I2C_SCL 22
 
-// Motors (L298N)
-#define EN_LEFT   17  
+#define EN_LEFT   17
 #define FL_IN1    32
 #define FL_IN2    33
 #define RL_IN1    25
 #define RL_IN2    26
 
-#define EN_RIGHT  16  
+#define EN_RIGHT  16
 #define FR_IN1    27
 #define FR_IN2    14
 #define RR_IN1    13
@@ -38,38 +22,27 @@
 
 #define BUZZER_PIN 2
 
-// =========================================
-// CONFIG
-// =========================================
 const bool INVERT_LEFT  = true;
 const bool INVERT_RIGHT = true;
 
-// Motion PWM (adjustable)
-int PWM_FWD   = 165;      // Tốc độ đi thẳng (0-255)
-int PWM_TURN  = 179;      // Tốc độ quay (0-255)
+int PWM_FWD   = 165;
+int PWM_TURN  = 179;
 const int PWM_BRAKE = 150;
 
-// Time-based Turn (adjustable)
 unsigned long TURN_90_MS  = 620;
 unsigned long TURN_180_MS = 1240;
 
-// Turn Speed Zones
 const int PWM_TURN_SLOW = 120;
 const int PWM_TURN_FINE = 90;
 const float SLOW_ZONE_RATIO = 0.25;
 const float FINE_ZONE_RATIO = 0.10;
 
-// Gain for straight driving
 static float leftGain  = 1.00f;
 static float rightGain = 1.011f;
 
-// PWM Properties
 const int MOTOR_PWM_FREQ = 20000;
 const int MOTOR_PWM_RES  = 8;
 
-// =========================================
-// OBJECTS
-// =========================================
 U8G2_SH1106_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 WebServer server(80);
 Preferences prefs;
@@ -77,9 +50,6 @@ Preferences prefs;
 String lastAction = "READY";
 String robotIP = "";
 
-// =========================================
-// MOTOR FUNCTIONS
-// =========================================
 static inline uint8_t clampDuty(int v) {
   if (v < 0) return 0;
   if (v > 255) return 255;
@@ -113,7 +83,6 @@ static inline int applyGainDuty(int pwm, float gain) {
   return (int)(v + 0.5f);
 }
 
-// Forward
 static void driveForward(int pwm) {
   int l = applyGainDuty(pwm, leftGain);
   int r = applyGainDuty(pwm, rightGain);
@@ -125,7 +94,6 @@ static void driveForward(int pwm) {
   digitalWrite(RR_IN1, INVERT_RIGHT ? LOW : HIGH); digitalWrite(RR_IN2, INVERT_RIGHT ? HIGH : LOW);
 }
 
-// Backward
 static void driveBackward(int pwm) {
   int l = applyGainDuty(pwm, leftGain);
   int r = applyGainDuty(pwm, rightGain);
@@ -137,7 +105,6 @@ static void driveBackward(int pwm) {
   digitalWrite(RR_IN1, INVERT_RIGHT ? HIGH : LOW); digitalWrite(RR_IN2, INVERT_RIGHT ? LOW : HIGH);
 }
 
-// Turn Left direction (Left backward, Right forward)
 static void setMotorDirLeft() {
   digitalWrite(FL_IN1, INVERT_LEFT ? HIGH : LOW);  digitalWrite(FL_IN2, INVERT_LEFT ? LOW : HIGH);
   digitalWrite(RL_IN1, INVERT_LEFT ? HIGH : LOW);  digitalWrite(RL_IN2, INVERT_LEFT ? LOW : HIGH);
@@ -145,7 +112,6 @@ static void setMotorDirLeft() {
   digitalWrite(RR_IN1, INVERT_RIGHT ? LOW : HIGH); digitalWrite(RR_IN2, INVERT_RIGHT ? HIGH : LOW);
 }
 
-// Turn Right direction (Left forward, Right backward)
 static void setMotorDirRight() {
   digitalWrite(FL_IN1, INVERT_LEFT ? LOW : HIGH);  digitalWrite(FL_IN2, INVERT_LEFT ? HIGH : LOW);
   digitalWrite(RL_IN1, INVERT_LEFT ? LOW : HIGH);  digitalWrite(RL_IN2, INVERT_LEFT ? HIGH : LOW);
@@ -153,7 +119,6 @@ static void setMotorDirRight() {
   digitalWrite(RR_IN1, INVERT_RIGHT ? HIGH : LOW); digitalWrite(RR_IN2, INVERT_RIGHT ? LOW : HIGH);
 }
 
-// Hard Brake
 static void applyHardBrake(bool wasTurningLeft, int brakePwm = PWM_BRAKE, int brakeMs = 80) {
   if (wasTurningLeft) {
     setMotorDirRight();
@@ -165,22 +130,20 @@ static void applyHardBrake(bool wasTurningLeft, int brakePwm = PWM_BRAKE, int br
   motorsStop();
 }
 
-// Time-based rotation with speed zones
 static void rotateByTime(unsigned long totalMs, bool isLeft) {
   motorsStop();
   delay(50);
 
   unsigned long slowZoneStart = (unsigned long)(totalMs * (1.0 - SLOW_ZONE_RATIO));
   unsigned long fineZoneStart = (unsigned long)(totalMs * (1.0 - FINE_ZONE_RATIO));
-  
-  // Calculate slow/fine speeds based on current PWM_TURN
-  int pwmSlow = (PWM_TURN * 2) / 3;  // ~67% of turn speed
-  int pwmFine = PWM_TURN / 2;        // ~50% of turn speed
+
+  int pwmSlow = (PWM_TURN * 2) / 3;
+  int pwmFine = PWM_TURN / 2;
   if (pwmSlow < 80) pwmSlow = 80;
   if (pwmFine < 60) pwmFine = 60;
-  
+
   if (isLeft) setMotorDirLeft(); else setMotorDirRight();
-  
+
   unsigned long startTime = millis();
   int currentPwm = PWM_TURN;
   setSideSpeed(currentPwm, currentPwm);
@@ -188,7 +151,7 @@ static void rotateByTime(unsigned long totalMs, bool isLeft) {
   while (true) {
     unsigned long elapsed = millis() - startTime;
     if (elapsed >= totalMs) break;
-    
+
     int newPwm;
     if (elapsed >= fineZoneStart) {
       newPwm = pwmFine;
@@ -198,27 +161,23 @@ static void rotateByTime(unsigned long totalMs, bool isLeft) {
     } else {
       newPwm = PWM_TURN;
     }
-    
+
     if (abs(newPwm - currentPwm) >= 8) {
       currentPwm = newPwm;
       setSideSpeed(currentPwm, currentPwm);
     }
-    
+
     delay(5);
   }
 
   motorsStop();
   delay(15);
-  
-  // Active braking - đảo chiều motor để dừng nhanh
+
   int brakePwm = (currentPwm < pwmSlow) ? (PWM_BRAKE / 2) : PWM_BRAKE;
   int brakeMs = (currentPwm < pwmSlow) ? 40 : 60;
   applyHardBrake(isLeft, brakePwm, brakeMs);
 }
 
-// =========================================
-// BUZZER
-// =========================================
 static void buzzerInit() {
   ledcAttach((uint8_t)BUZZER_PIN, 2000, 8);
   ledcWriteTone((uint8_t)BUZZER_PIN, 0);
@@ -230,33 +189,27 @@ static void beepOnce(int ms = 80, int freq = 2200) {
   ledcWriteTone((uint8_t)BUZZER_PIN, 0);
 }
 
-// =========================================
-// OLED
-// =========================================
 void updateOLED() {
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
-  
+
   oled.drawStr(0, 12, "=== MOTOR TEST ===");
   oled.drawStr(0, 26, ("Action: " + lastAction).c_str());
-  
+
   char buf90[24], buf180[24];
   sprintf(buf90, "TURN_90: %lu ms", TURN_90_MS);
   sprintf(buf180, "TURN_180: %lu ms", TURN_180_MS);
   oled.drawStr(0, 40, buf90);
-  
+
   if (robotIP.length() > 0) {
     oled.drawStr(0, 54, robotIP.c_str());
   } else {
     oled.drawStr(0, 54, buf180);
   }
-  
+
   oled.sendBuffer();
 }
 
-// =========================================
-// SAVE/LOAD CONFIG
-// =========================================
 void saveConfig() {
   prefs.begin("motortest", false);
   prefs.putULong("turn90", TURN_90_MS);
@@ -275,9 +228,6 @@ void loadConfig() {
   prefs.end();
 }
 
-// =========================================
-// WEB SERVER HANDLERS
-// =========================================
 const char HTML_PAGE[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
 <html>
@@ -287,30 +237,30 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
   <title>Carry Robot Test</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { 
-      font-family: Arial, sans-serif; 
+    body {
+      font-family: Arial, sans-serif;
       background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      min-height: 100vh; 
+      min-height: 100vh;
       padding: 20px;
       color: #fff;
     }
     .container { max-width: 500px; margin: 0 auto; }
     h1 { text-align: center; margin-bottom: 20px; color: #00d4ff; }
-    
+
     .section {
       background: rgba(255,255,255,0.1);
       border-radius: 15px;
       padding: 20px;
       margin-bottom: 20px;
     }
-    .section h2 { 
-      color: #00d4ff; 
-      margin-bottom: 15px; 
+    .section h2 {
+      color: #00d4ff;
+      margin-bottom: 15px;
       font-size: 1.1em;
       border-bottom: 1px solid rgba(255,255,255,0.2);
       padding-bottom: 10px;
     }
-    
+
     .info-box {
       background: rgba(0,212,255,0.1);
       border: 1px solid rgba(0,212,255,0.3);
@@ -321,14 +271,14 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     }
     .info-box .label { color: #aaa; }
     .info-box .value { color: #4CAF50; font-weight: bold; }
-    
+
     .btn-grid {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 10px;
     }
     .btn-grid.single { grid-template-columns: 1fr; }
-    
+
     .btn {
       padding: 20px 10px;
       font-size: 16px;
@@ -340,7 +290,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       text-transform: uppercase;
     }
     .btn:active { transform: scale(0.95); }
-    
+
     .btn-fwd { background: #4CAF50; color: white; grid-column: 2; }
     .btn-back { background: #ff9800; color: white; grid-column: 2; }
     .btn-left { background: #2196F3; color: white; }
@@ -348,9 +298,9 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
     .btn-stop { background: #f44336; color: white; }
     .btn-uturn { background: #9c27b0; color: white; }
     .btn-save { background: #00bcd4; color: white; }
-    
+
     .btn:hover { filter: brightness(1.2); }
-    
+
     .config-row {
       display: flex;
       align-items: center;
@@ -370,7 +320,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       text-align: center;
     }
     .config-row .unit { margin-left: 5px; color: #aaa; min-width: 30px; }
-    
+
     .adjust-btns {
       display: flex;
       gap: 5px;
@@ -387,7 +337,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       color: white;
     }
     .adjust-btns button:hover { background: #666; }
-    
+
     .slider-row {
       margin-bottom: 12px;
       padding: 10px;
@@ -415,7 +365,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       border-radius: 50%;
       cursor: pointer;
     }
-    
+
     .status {
       text-align: center;
       padding: 15px;
@@ -423,12 +373,12 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       border-radius: 10px;
       margin-top: 10px;
     }
-    .status span { 
-      font-size: 1.2em; 
+    .status span {
+      font-size: 1.2em;
       color: #00d4ff;
       font-weight: bold;
     }
-    
+
     #log {
       background: #000;
       color: #0f0;
@@ -444,7 +394,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
 <body>
   <div class="container">
     <h1>🤖 Carry Robot Test</h1>
-    
+
     <div class="section">
       <h2>📍 Movement Control</h2>
       <div class="info-box">
@@ -466,7 +416,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         <button class="btn btn-uturn" onclick="cmd('U')">↻ U-Turn 180°</button>
       </div>
     </div>
-    
+
     <div class="section">
       <h2>🚀 Speed Config</h2>
       <div class="slider-row">
@@ -478,7 +428,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         <input type="range" id="pwmTurn" min="80" max="255" value="%PWMTURN%" oninput="document.getElementById('pwmTurnVal').textContent=this.value">
       </div>
     </div>
-    
+
     <div class="section">
       <h2>⏱️ Turn Timing</h2>
       <div class="config-row">
@@ -503,14 +453,14 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         <button class="btn btn-save" onclick="saveConfig()">💾 Save All Config</button>
       </div>
     </div>
-    
+
     <div class="section">
       <h2>📋 Log</h2>
       <div id="log"></div>
       <div class="status">Last Action: <span id="lastAction">READY</span></div>
     </div>
   </div>
-  
+
   <script>
     function log(msg) {
       const el = document.getElementById('log');
@@ -518,7 +468,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
       el.innerHTML += `[${time}] ${msg}\n`;
       el.scrollTop = el.scrollHeight;
     }
-    
+
     function cmd(c) {
       const pwmF = document.getElementById('pwmFwd').value;
       const pwmT = document.getElementById('pwmTurn').value;
@@ -531,14 +481,14 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         })
         .catch(e => log(`Error: ${e}`));
     }
-    
+
     function adjust(id, delta) {
       const el = document.getElementById(id);
       let val = parseInt(el.value) + delta;
       if (val < 100) val = 100;
       el.value = val;
     }
-    
+
     function saveConfig() {
       const t90 = document.getElementById('turn90').value;
       const t180 = document.getElementById('turn180').value;
@@ -550,7 +500,7 @@ const char HTML_PAGE[] PROGMEM = R"rawliteral(
         .then(d => log(`Saved: ${d}`))
         .catch(e => log(`Error: ${e}`));
     }
-    
+
     log('Web interface ready');
     log('Active braking: ENABLED');
   </script>
@@ -572,26 +522,25 @@ void handleCmd() {
     server.send(400, "text/plain", "Missing cmd");
     return;
   }
-  
-  // Get PWM values from request (temporary, for testing)
+
   int tempPwmFwd = PWM_FWD;
   int tempPwmTurn = PWM_TURN;
   if (server.hasArg("pf")) {
     tempPwmFwd = server.arg("pf").toInt();
     if (tempPwmFwd < 80) tempPwmFwd = 80;
     if (tempPwmFwd > 255) tempPwmFwd = 255;
-    PWM_FWD = tempPwmFwd;  // Update global for current session
+    PWM_FWD = tempPwmFwd;
   }
   if (server.hasArg("pt")) {
     tempPwmTurn = server.arg("pt").toInt();
     if (tempPwmTurn < 80) tempPwmTurn = 80;
     if (tempPwmTurn > 255) tempPwmTurn = 255;
-    PWM_TURN = tempPwmTurn;  // Update global for current session
+    PWM_TURN = tempPwmTurn;
   }
-  
+
   char cmd = server.arg("c").charAt(0);
   String result = "OK";
-  
+
   switch (cmd) {
     case 'F':
       lastAction = "FWD@" + String(tempPwmFwd);
@@ -602,7 +551,7 @@ void handleCmd() {
       motorsStop();
       result = "FORWARD done (PWM:" + String(tempPwmFwd) + ")";
       break;
-      
+
     case 'B':
       lastAction = "BACK@" + String(tempPwmFwd);
       updateOLED();
@@ -612,7 +561,7 @@ void handleCmd() {
       motorsStop();
       result = "BACKWARD done (PWM:" + String(tempPwmFwd) + ")";
       break;
-      
+
     case 'L':
       lastAction = "L90@" + String(tempPwmTurn);
       updateOLED();
@@ -620,7 +569,7 @@ void handleCmd() {
       rotateByTime(TURN_90_MS, true);
       result = "LEFT done (" + String(TURN_90_MS) + "ms, PWM:" + String(tempPwmTurn) + ")";
       break;
-      
+
     case 'R':
       lastAction = "R90@" + String(tempPwmTurn);
       updateOLED();
@@ -628,7 +577,7 @@ void handleCmd() {
       rotateByTime(TURN_90_MS, false);
       result = "RIGHT done (" + String(TURN_90_MS) + "ms, PWM:" + String(tempPwmTurn) + ")";
       break;
-      
+
     case 'U':
       lastAction = "U180@" + String(tempPwmTurn);
       updateOLED();
@@ -636,18 +585,18 @@ void handleCmd() {
       rotateByTime(TURN_180_MS, true);
       result = "U-TURN done (" + String(TURN_180_MS) + "ms, PWM:" + String(tempPwmTurn) + ")";
       break;
-      
+
     case 'S':
       lastAction = "STOPPED";
       motorsStop();
       result = "STOPPED";
       break;
-      
+
     default:
       result = "Unknown cmd";
       break;
   }
-  
+
   lastAction = "READY";
   updateOLED();
   server.send(200, "text/plain", result);
@@ -672,23 +621,19 @@ void handleSave() {
     if (PWM_TURN < 80) PWM_TURN = 80;
     if (PWM_TURN > 255) PWM_TURN = 255;
   }
-  
+
   saveConfig();
   updateOLED();
-  
+
   String msg = "T90=" + String(TURN_90_MS) + "ms, T180=" + String(TURN_180_MS) + "ms, Fwd=" + String(PWM_FWD) + ", Turn=" + String(PWM_TURN);
   server.send(200, "text/plain", msg);
   beepOnce(100, 2400);
 }
 
-// =========================================
-// SETUP
-// =========================================
 void setup() {
   Serial.begin(115200);
   Serial.println("\n=== Carry Robot Motor Test (Web) ===");
 
-  // Pin Init
   pinMode(FL_IN1, OUTPUT); pinMode(FL_IN2, OUTPUT);
   pinMode(RL_IN1, OUTPUT); pinMode(RL_IN2, OUTPUT);
   pinMode(FR_IN1, OUTPUT); pinMode(FR_IN2, OUTPUT);
@@ -700,24 +645,21 @@ void setup() {
 
   Wire.begin(I2C_SDA, I2C_SCL);
   oled.begin();
-  
-  // Load saved config
+
   loadConfig();
-  
-  // OLED: Show boot
+
   oled.clearBuffer();
   oled.setFont(u8g2_font_6x10_tf);
   oled.drawStr(0, 12, "MOTOR TEST");
   oled.drawStr(0, 26, "Connecting WiFi...");
   oled.sendBuffer();
-  
-  // WiFiManager
+
   WiFiManager wm;
   wm.setConfigPortalTimeout(180);
-  
+
   String apName = "CarryTest-Setup";
   bool connected = wm.autoConnect(apName.c_str(), "test1234");
-  
+
   if (!connected) {
     oled.clearBuffer();
     oled.drawStr(0, 12, "WiFi FAILED");
@@ -726,36 +668,29 @@ void setup() {
     delay(2000);
     ESP.restart();
   }
-  
-  // Get IP
+
   robotIP = WiFi.localIP().toString();
   Serial.print("IP: ");
   Serial.println(robotIP);
-  
-  // Setup web server
+
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
   server.on("/save", handleSave);
   server.begin();
   Serial.println("Web server started");
-  
-  // Show IP on OLED
+
   updateOLED();
   beepOnce(100, 2400);
-  
+
   Serial.println("Ready! Open browser: http://" + robotIP);
 }
 
-// =========================================
-// LOOP
-// =========================================
 void loop() {
   server.handleClient();
-  
-  // Serial commands still work
+
   if (Serial.available()) {
     char cmd = toupper(Serial.read());
-    
+
     switch (cmd) {
       case 'F':
         Serial.println(">> FORWARD 2s");
@@ -765,7 +700,7 @@ void loop() {
         delay(2000);
         motorsStop();
         break;
-        
+
       case 'B':
         Serial.println(">> BACKWARD 2s");
         lastAction = "BACKWARD";
@@ -774,35 +709,35 @@ void loop() {
         delay(2000);
         motorsStop();
         break;
-        
+
       case 'L':
         Serial.println(">> LEFT 90");
         lastAction = "LEFT 90";
         updateOLED();
         rotateByTime(TURN_90_MS, true);
         break;
-        
+
       case 'R':
         Serial.println(">> RIGHT 90");
         lastAction = "RIGHT 90";
         updateOLED();
         rotateByTime(TURN_90_MS, false);
         break;
-        
+
       case 'U':
         Serial.println(">> U-TURN 180");
         lastAction = "U-TURN";
         updateOLED();
         rotateByTime(TURN_180_MS, true);
         break;
-        
+
       case 'S':
         Serial.println(">> STOP");
         lastAction = "STOPPED";
         motorsStop();
         break;
     }
-    
+
     lastAction = "READY";
     updateOLED();
   }

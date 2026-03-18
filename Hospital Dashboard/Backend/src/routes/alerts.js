@@ -3,7 +3,6 @@ import Alert from '../models/Alert.js';
 
 const r = Router();
 
-/** GET /api/alerts?active=1&limit=50 */
 r.get('/', async (req, res) => {
   const active = String(req.query.active || '') === '1';
   const limit = Math.min(Number(req.query.limit) || 50, 200);
@@ -13,7 +12,6 @@ r.get('/', async (req, res) => {
   res.json(items);
 });
 
-/** POST /api/alerts */
 r.post('/', async (req, res) => {
   try {
     const { type, level, robotId, missionId, message, data } = req.body || {};
@@ -25,7 +23,6 @@ r.post('/', async (req, res) => {
   }
 });
 
-/** PUT /api/alerts/:id/resolve */
 r.put('/:id/resolve', async (req, res) => {
   try {
     const item = await Alert.findById(req.params.id);

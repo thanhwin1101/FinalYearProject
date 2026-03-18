@@ -9,7 +9,7 @@ export interface Event {
 }
 
 export interface DailyStat {
-  _id: string;  // date string YYYY-MM-DD
+  _id: string;
   count: number;
 }
 
@@ -26,12 +26,10 @@ export interface ButtonEventData {
   timestamp?: number;
 }
 
-// Create button event (from ESP32)
 export async function createButtonEvent(data: ButtonEventData): Promise<{ ok: boolean; id: string }> {
   return post<{ ok: boolean; id: string }>(API_ENDPOINTS.eventsButton, data);
 }
 
-// Get daily stats
 export async function getDailyStats(params?: {
   uid?: string;
   from?: string;
@@ -40,7 +38,6 @@ export async function getDailyStats(params?: {
   return get<DailyStat[]>(API_ENDPOINTS.eventsStatsDaily, { params });
 }
 
-// Get daily stats by user (for stacked charts)
 export async function getDailyStatsByUser(params?: {
   from?: string;
   to?: string;

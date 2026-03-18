@@ -18,7 +18,7 @@ interface PatientFormProps {
   onClose: () => void;
   onSave: (patient: Patient, photoFile?: File) => void;
   editingPatient?: Patient | null;
-  existingPatients?: Patient[]; // For duplicate card check
+  existingPatients?: Patient[];
 }
 
 interface FormData {
@@ -36,7 +36,6 @@ interface FormData {
   relativePhone: string;
 }
 
-// Helper function to convert base64 to File
 function base64ToFile(base64: string, filename: string): File {
   const arr = base64.split(',');
   const mimeMatch = arr[0].match(/:(.*?);/);
@@ -51,8 +50,8 @@ function base64ToFile(base64: string, filename: string): File {
 }
 
 export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingPatients = [] }: PatientFormProps) {
-  const [photo, setPhoto] = useState<string>(''); // base64 for preview
-  const [photoFile, setPhotoFile] = useState<File | null>(null); // File for upload
+  const [photo, setPhoto] = useState<string>('');
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [selectedBedId, setSelectedBedId] = useState<string>('');
   const [duplicateCardError, setDuplicateCardError] = useState<string>('');
   const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormData>();
@@ -60,10 +59,8 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
   const mrnValue = watch('mrn');
   const cardNumberValue = watch('cardNumber');
 
-  // RFID Reader integration via global context
   const { status: rfidStatus, isSupported: rfidSupported, onCardRead } = useRFIDContext();
 
-  // Check for duplicate card number
   const checkDuplicateCard = useCallback((uid: string) => {
     const duplicate = existingPatients.find(
       p => p.cardNumber?.toUpperCase() === uid.toUpperCase() && p.id !== editingPatient?.id
@@ -76,7 +73,6 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
     return false;
   }, [existingPatients, editingPatient]);
 
-  // Subscribe to card read events when form is open
   useEffect(() => {
     if (isOpen) {
       console.log('[PatientForm] Subscribing to RFID events');
@@ -92,11 +88,10 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
     }
   }, [isOpen, onCardRead, setValue, checkDuplicateCard]);
 
-  // Load form data when editing or opening
   useEffect(() => {
     if (isOpen) {
       if (editingPatient) {
-        // Edit mode: load existing patient data
+
         reset({
           fullName: editingPatient.fullName,
           mrn: editingPatient.mrn,
@@ -114,7 +109,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
         setPhoto(editingPatient.photo || '');
         setSelectedBedId(editingPatient.roomBedId || '');
       } else {
-        // New patient mode: clear form
+
         reset({
           fullName: '',
           mrn: '',
@@ -140,11 +135,11 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
   };
 
   const onSubmit = (data: FormData) => {
-    // Check for duplicate before saving
+
     if (duplicateCardError) {
-      return; // Don't save if duplicate card
+      return;
     }
-    
+
     const patient: Patient = {
       id: editingPatient?.id || crypto.randomUUID(),
       ...data,
@@ -185,13 +180,13 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
         </DialogHeader>
 
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
-          {/* Biometric Integration */}
+          {}
           <div className="space-y-3">
             <Label className="text-base font-semibold">Patient Photo (Biometric)</Label>
-            <CameraCapture 
+            <CameraCapture
               onCapture={(base64) => {
                 setPhoto(base64);
-                // Convert base64 to File for upload
+
                 if (base64) {
                   const file = base64ToFile(base64, `patient-photo-${Date.now()}.jpg`);
                   setPhotoFile(file);
@@ -199,11 +194,11 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
                 } else {
                   setPhotoFile(null);
                 }
-              }} 
+              }}
               currentPhoto={photo} />
           </div>
 
-          {/* Patient Identification */}
+          {}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-3">
               <Label htmlFor="fullName" className="text-base font-medium">Full Name *</Label>
@@ -297,7 +292,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
             </div>
           </div>
 
-          {/* Medical & Admission Details */}
+          {}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-2">
               <Label htmlFor="status" className="text-base font-medium">Patient Status *</Label>
@@ -341,7 +336,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
             </div>
           </div>
 
-          {/* Location Mapping */}
+          {}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-3">
               <Label htmlFor="department" className="text-base font-medium">Department *</Label>

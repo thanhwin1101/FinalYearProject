@@ -5,7 +5,6 @@ import { dailyCountPipeline } from '../utils/agg.js';
 
 const r = Router();
 
-/** ESP32 gửi sự kiện bấm nút – chỉ nhận nếu UID đã đăng ký */
 r.post('/button', async (req, res) => {
   try {
     const { uid, timestamp } = req.body || {};
@@ -13,13 +12,12 @@ r.post('/button', async (req, res) => {
 
     const normUid = String(uid).toUpperCase();
 
-    // CHẶN UID CHƯA ĐĂNG KÝ
     const exists = await User.exists({ uid: normUid });
     if (!exists) return res.status(403).json({ ok: false, message: 'UID not registered' });
 
     const doc = await Event.create({
       uid: normUid,
-      at: new Date(),                 // lấy thời gian server
+      at: new Date(),
       deviceTs: Number(timestamp) || undefined
     });
     res.status(201).json({ ok: true, id: doc._id });
@@ -28,7 +26,6 @@ r.post('/button', async (req, res) => {
   }
 });
 
-/** Thống kê theo ngày (lọc theo uid nếu có) */
 r.get('/stats/daily', async (req, res) => {
   try {
     const { uid, from, to } = req.query;
@@ -40,7 +37,6 @@ r.get('/stats/daily', async (req, res) => {
   }
 });
 
-/** Thống kê theo ngày & theo user (cho stacked chart khi chọn "Tất cả") */
 r.get('/stats/daily-by-user', async (req, res) => {
   try {
     const { from, to } = req.query;
