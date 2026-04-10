@@ -55,10 +55,9 @@ export function useAlerts(pollInterval: number = 10000) {
 
   const alertCounts = {
     total: alerts.length,
-    critical: alerts.filter(a => a.level === 'critical').length,
-    error: alerts.filter(a => a.level === 'error').length,
-    warning: alerts.filter(a => a.level === 'warning').length,
-    info: alerts.filter(a => a.level === 'info').length,
+    high: alerts.filter(a => a.level === 'high').length,
+    medium: alerts.filter(a => a.level === 'medium').length,
+    low: alerts.filter(a => a.level === 'low').length,
   };
 
   return {

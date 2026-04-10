@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Search, Filter, Download, UserPlus, Edit, Trash2, RotateCcw, User, ArrowUpDown, CalendarIcon } from 'lucide-react';
+import { Search, Download, UserPlus, Edit, Trash2, RotateCcw, User, ArrowUpDown, CalendarIcon } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { Button } from '@/app/components/ui/button';
@@ -55,7 +55,6 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
       result = result.filter(p =>
         p.fullName.toLowerCase().includes(search) ||
         p.mrn.toLowerCase().includes(search) ||
-        p.cardNumber.toLowerCase().includes(search) ||
         p.primaryDoctor.toLowerCase().includes(search) ||
         p.relativeName.toLowerCase().includes(search)
       );
@@ -165,7 +164,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
                 id="quickSearch"
                 value={filters.quickSearch}
                 onChange={(e) => setFilters({ ...filters, quickSearch: e.target.value })}
-                placeholder="Search by Name, MRN, RFID Card, Doctor, or Relative..."
+                placeholder="Search by Name, MRN, Doctor, or Relative..."
                 className="pl-12 h-12 text-base"
               />
             </div>
@@ -312,7 +311,6 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
                 <TableHead className="text-base font-semibold py-3 w-[60px]">Bed</TableHead>
                 <TableHead className="text-base font-semibold py-3 w-[100px]">Status</TableHead>
                 <TableHead className="text-base font-semibold py-3 w-[110px]">Doctor</TableHead>
-                <TableHead className="text-base font-semibold py-3 w-[100px]">RFID Card</TableHead>
                 <TableHead className="text-base font-semibold py-3 w-[120px]">Relative</TableHead>
                 <TableHead className="text-base font-semibold py-3 text-center w-[110px]">Actions</TableHead>
               </TableRow>
@@ -320,7 +318,7 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
             <TableBody>
               {filteredPatients.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center py-10 text-gray-500 text-base">
+                  <TableCell colSpan={10} className="text-center py-10 text-gray-500 text-base">
                     No patients found. Click "Add Patient" to register a new patient.
                   </TableCell>
                 </TableRow>
@@ -347,7 +345,6 @@ export function PatientDashboard({ patients, onAddPatient, onUpdatePatient, onDe
                       <Badge className={`${getStatusColor(patient.status)} text-sm px-2 py-0.5`}>{patient.status}</Badge>
                     </TableCell>
                     <TableCell className="text-base py-3" onClick={() => handleViewPatientDetails(patient)}>{patient.primaryDoctor}</TableCell>
-                    <TableCell className="font-mono text-base py-3" onClick={() => handleViewPatientDetails(patient)}>{patient.cardNumber}</TableCell>
                     <TableCell onClick={() => handleViewPatientDetails(patient)} className="py-3">
                       <div className="text-base">
                         <div>{patient.relativeName}</div>

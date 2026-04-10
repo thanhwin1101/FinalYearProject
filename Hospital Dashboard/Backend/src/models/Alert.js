@@ -5,7 +5,15 @@ const alertSchema = new mongoose.Schema(
     type: {
       type: String,
       required: true,
-      enum: ['carry_low_battery', 'rescue_required', 'route_deviation', 'info']
+      enum: [
+        'carry_low_battery',
+        'battery_warning',
+        'battery_critical',
+        'mission_rejected_low_battery',
+        'rescue_required',
+        'route_deviation',
+        'info'
+      ]
     },
     level: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
 

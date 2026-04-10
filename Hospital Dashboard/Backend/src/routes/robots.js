@@ -1,8 +1,44 @@
 import express from 'express';
 import Robot from '../models/Robot.js';
 import TransportMission from '../models/TransportMission.js';
+import { publishCommand, publishCarryStackJson, STACK_ROBOT_ID } from '../services/mqttService.js';
+import { ROUTE_TEST_MED_TO_R4M3 } from '../utils/checkpointIds.js';
+import { LOW_BATTERY_PCT, ROBOT_ONLINE_TIMEOUT_MS } from '../utils/constants.js';
 
 const router = express.Router();
+
+// ---- SSE live-stream registry ----
+const sseClients = new Set();
+
+/** Push a robot-position event to all connected SSE clients */
+export function emitRobotPosition(data) {
+  if (sseClients.size === 0) return;
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(msg); } catch { sseClients.delete(res); }
+  }
+}
+
+/** SSE endpoint: GET /api/robots/live */
+router.get('/live', (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // nginx pass-through
+  res.flushHeaders();
+
+  // Send a heartbeat every 15 s so the browser doesn't time out
+  const hb = setInterval(() => {
+    try { res.write(': heartbeat\n\n'); } catch { clearInterval(hb); }
+  }, 15000);
+
+  sseClients.add(res);
+
+  req.on('close', () => {
+    sseClients.delete(res);
+    clearInterval(hb);
+  });
+});
 
 function cleanString(v, max = 64) {
   return String(v ?? '').trim().slice(0, max);
@@ -62,7 +98,7 @@ router.put('/:id/telemetry', async (req, res) => {
       else status = 'busy';
     }
 
-    if (batteryLevel <= 20) status = 'low_battery';
+    if (batteryLevel < LOW_BATTERY_PCT) status = 'low_battery';
 
     const update = {
       robotId,
@@ -87,11 +123,10 @@ router.put('/:id/telemetry', async (req, res) => {
 
 router.get('/carry/status', async (_req, res) => {
   try {
-    const ONLINE_MS = 15000;
     const now = Date.now();
 
     const all = await Robot.find({ type: 'carry' }).lean();
-    const online = all.filter(r => r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ONLINE_MS));
+    const online = all.filter(r => r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ROBOT_ONLINE_TIMEOUT_MS));
 
     const robotIds = online.map(r => r.robotId);
     const activeMissions = await TransportMission.find({
@@ -126,6 +161,7 @@ router.get('/carry/status', async (_req, res) => {
         destination,
         location,
         currentNode,
+        robotMode: r.status === 'follow' ? 'follow' : 'auto',
       };
     });
 
@@ -139,6 +175,133 @@ router.get('/carry/status', async (_req, res) => {
     res.json({ summary, robots });
   } catch (e) {
     res.status(500).send(e?.message || 'Server error');
+  }
+});
+
+/**
+ * POST /api/robots/:id/command
+ * Gửi lệnh MQTT tới robot.
+ * Body: { command: "set_mode", mode: "follow" | "auto" }
+ * Chỉ cho phép set_mode: follow/idle — gate MED nằm trong firmware.
+ */
+router.post('/:id/command', async (req, res) => {
+  try {
+    const robotId = String(req.params.id || '').trim();
+    if (!robotId) return res.status(400).json({ error: 'robotId required' });
+
+    const { command, mode, ...rest } = req.body || {};
+    if (!command) return res.status(400).json({ error: 'command required' });
+
+    const STACK_COMMANDS = [
+      'stack_route_test',
+      'stack_route_now',
+      'stack_start',
+      'stack_cancel',
+      'stack_status',
+      'relay_set',
+      'relay_resume',
+    ];
+    if (STACK_COMMANDS.includes(command)) {
+      if (robotId !== STACK_ROBOT_ID) {
+        return res.status(400).json({
+          error: `Lệnh stack chỉ dùng với robotId "${STACK_ROBOT_ID}" (MQTT_STACK_ROBOT_ID)`,
+        });
+      }
+      let sent = false;
+      if (command === 'stack_route_test') {
+        sent = publishCarryStackJson({ action: 'route', ids: ROUTE_TEST_MED_TO_R4M3 });
+      } else if (command === 'stack_route_now') {
+        sent = publishCarryStackJson({
+          action: 'route',
+          ids: ROUTE_TEST_MED_TO_R4M3,
+          immediate: true,
+        });
+      } else if (command === 'stack_start') {
+        sent = publishCarryStackJson({ action: 'start' });
+      } else if (command === 'stack_cancel') {
+        sent = publishCarryStackJson({ action: 'cancel' });
+      } else if (command === 'stack_status') {
+        sent = publishCarryStackJson({ action: 'status' });
+      } else if (command === 'relay_set') {
+        const which = String(rest.which || '').trim();
+        const on =
+          rest.on === true ||
+          rest.on === 1 ||
+          String(rest.on).toLowerCase() === 'true';
+        if (!['vision', 'line', 'nfc'].includes(which)) {
+          return res.status(400).json({
+            error: 'relay_set cần which: "vision" | "line" | "nfc" và on: boolean',
+          });
+        }
+        sent = publishCarryStackJson({ action: 'relay', which, on });
+      } else if (command === 'relay_resume') {
+        sent = publishCarryStackJson({ action: 'relay_resume' });
+      }
+      if (!sent) {
+        return res.status(503).json({ error: 'MQTT broker not connected' });
+      }
+      if (command.startsWith('stack_')) {
+        console.log(`[CMD] ${command} → carry stack`, ROUTE_TEST_MED_TO_R4M3);
+      } else {
+        console.log(`[CMD] ${command} → carry stack`, rest);
+      }
+      return res.json({
+        ok: true,
+        robotId,
+        command,
+        ...(command.startsWith('stack_route') ? { routeIds: ROUTE_TEST_MED_TO_R4M3 } : {}),
+        ...(command === 'relay_set'
+          ? {
+              which: String(rest.which || '').trim(),
+              on:
+                rest.on === true ||
+                rest.on === 1 ||
+                String(rest.on).toLowerCase() === 'true',
+            }
+          : {}),
+      });
+    }
+
+    const ALLOWED_COMMANDS = [
+      'set_mode',
+      'goto_mode',
+      'follow',
+      'idle',
+      'stop',
+      'resume',
+      'tune_turn',
+      'test_dashboard',
+    ];
+    if (!ALLOWED_COMMANDS.includes(command)) {
+      return res.status(400).json({ error: `Unknown command: ${command}` });
+    }
+
+    const params = {};
+    if (mode) params.mode = mode;
+    Object.assign(params, rest);
+
+    // For carry-stack robot, route ALL commands through carry/robot/cmd
+    if (robotId === STACK_ROBOT_ID) {
+      const stackPayload = { action: command };
+      if (mode) stackPayload.mode = mode;
+      Object.assign(stackPayload, rest);
+      const sent = publishCarryStackJson(stackPayload);
+      if (!sent) {
+        return res.status(503).json({ error: 'MQTT broker not connected' });
+      }
+      console.log(`[CMD] ${command} → carry stack (bridged)`, stackPayload);
+      return res.json({ ok: true, robotId, command, ...(mode ? { mode } : {}) });
+    }
+
+    const sent = publishCommand(robotId, command, params);
+    if (!sent) {
+      return res.status(503).json({ error: 'MQTT broker not connected' });
+    }
+
+    console.log(`[CMD] ${command} → ${robotId}`, params);
+    res.json({ ok: true, robotId, command, ...(mode ? { mode } : {}) });
+  } catch (e) {
+    res.status(500).json({ error: e?.message || 'Server error' });
   }
 });
 

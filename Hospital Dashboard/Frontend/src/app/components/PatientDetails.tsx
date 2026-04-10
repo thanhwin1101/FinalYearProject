@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Pill, AlertTriangle, FileText, Plus, Trash2, Save, CalendarIcon } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
@@ -32,6 +32,9 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
   const [showAllergenForm, setShowAllergenForm] = useState(false);
   const [editingNotes, setEditingNotes] = useState(false);
   const [notes, setNotes] = useState(patient?.notes || '');
+
+  // Reset notes when the selected patient changes while the dialog stays open
+  useEffect(() => { setNotes(patient?.notes || ''); }, [patient?.id]);
   const [newAllergen, setNewAllergen] = useState('');
   const [newMed, setNewMed] = useState({
     name: '',
@@ -124,8 +127,6 @@ export function PatientDetails({ patient, isOpen, onClose, onUpdatePatient }: Pa
               <span>MRN: {patient.mrn}</span>
               <span>•</span>
               <span>Bed: {patient.roomBedId}</span>
-              <span>•</span>
-              <span>Card: {patient.cardNumber}</span>
             </div>
           </div>
           <Badge className={getStatusColor(patient.status)}>

@@ -1,0 +1,94 @@
+[RESET hoặc cấp nguồn ESP32]
+    |
+    v
+[Khởi tạo Serial, OLED, I2C, chân relay, nút bấm GPIO36]
+    |
+    v
+[OLED hiển thị dòng 1: "Connecting...", dòng 2: "WiFi: waiting", dòng 3: "MQTT: waiting"]
+    |
+    v
+[Đọc cấu hình từ Preferences (SPIFFS)]
+    - wifi_ssid, wifi_pass
+    - mqtt_server, mqtt_port, mqtt_user, mqtt_pass
+    |
+    v
+[Có đầy đủ cấu hình cũ không?]
+    |
+    +-- Không (thiếu hoặc rỗng) --> [Mở WiFiManager Portal] (A)
+    |
+    Có --> [Thử kết nối WiFi với cấu hình cũ trong 10 giây]
+                |
+                +-- Thất bại (sai pass, không thấy mạng, timeout) --> [Mở Portal] (A)
+                |
+                Thành công --> [OLED cập nhật: "WiFi: OK"]
+                                |
+                                v
+                        [Thử kết nối MQTT với cấu hình cũ trong 5 giây]
+                                |
+                                +-- Thất bại (sai user/pass, server lỗi) --> [Mở Portal] (A)
+                                |
+                                Thành công --> [OLED cập nhật: "MQTT: OK"]
+                                                |
+                                                v
+                                        [Tắt tất cả relay: digitalWrite(R1,LOW); R2=LOW; R3=LOW]
+                                                |
+                                                v
+                                        [Bật R2 và R3: digitalWrite(R2,HIGH); digitalWrite(R3,HIGH)]
+                                        Chờ 200ms để nguồn ổn định
+                                                |
+                                                v
+                                        [Khởi tạo cảm biến Auto mode]
+                                        - Cấu hình 3 chân line sensor (INPUT_PULLUP)
+                                        - Khởi tạo PN532 (SPI: SS=PA4, SCK=PA5, MISO=PA6, MOSI=PA7)
+                                        - Kiểm tra PN532 có đọc được thẻ không (tùy chọn)
+                                                |
+                                                v
+                                        [Gửi lệnh UART 0x01 (mode AUTO) cho STM32]
+                                                |
+                                                v
+                                        [OLED hiển thị màn hình IDLE Auto]
+                                        (xem thiết kế màn hình ở phần trước)
+                                                |
+                                                v
+                                        [Đăng ký MQTT topic: robot/command, robot/return_request]
+                                                |
+                                                v
+                                        [Vào vòng lặp chính (chờ lệnh route, nút bấm)]
+
+Chi tiết mở WiFiManager Portal và chờ nút "Save"
+text
+[Mở Portal]
+    |
+    v
+[OLED hiển thị trạng thái portal:
+    Dòng1: "WiFiManager"
+    Dòng2: "Portal Active"
+    Dòng3: "AP: Robot_Setup"
+    Dòng4: "IP: 192.168.4.1"
+]
+    |
+    v
+[Khởi tạo WiFiManager, thêm các tham số MQTT (server, port, user, pass)]
+    |
+    v
+[Cấu hình portal: timeout = 0 (chờ vô hạn), setSaveConfigCallback()]
+    |
+    v
+[Gọi wm.startConfigPortal("Robot_Setup")]
+    |
+    v
+[Người dùng kết nối điện thoại/PC vào AP "Robot_Setup", truy cập 192.168.4.1]
+    |
+    v
+[Người dùng nhập WiFi SSID, password, các thông số MQTT]
+    |
+    v
+[Người dùng bấm nút "Save" trên web portal]
+    |
+    v
+[Hàm saveConfigCallback() được gọi tự động]
+    - Lưu các tham số MQTT vào Preferences
+    - (WiFiManager tự động lưu WiFi)
+    |
+    v
+[Gọi ESP.restart()] --> [Quay lại đầu luồng boot]

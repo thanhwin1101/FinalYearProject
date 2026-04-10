@@ -80,16 +80,14 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
         console.log('[Camera] Retrying with basic constraints...');
         try {
           const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
-          if (videoRef.current) {
-            videoRef.current.srcObject = basicStream;
-            streamRef.current = basicStream;
-            videoRef.current.onloadedmetadata = () => {
-              videoRef.current?.play();
-              setIsStreaming(true);
-              setIsLoading(false);
-              setError('');
-            };
-          }
+          videoRef.current!.srcObject = basicStream;
+          streamRef.current = basicStream;
+          videoRef.current!.onloadedmetadata = () => {
+            videoRef.current?.play();
+            setIsStreaming(true);
+            setIsLoading(false);
+            setError('');
+          };
         } catch {
           setError('❌ Cannot start camera.');
         }
@@ -147,27 +145,30 @@ export function CameraCapture({ onCapture, currentPhoto }: CameraCaptureProps) {
   return (
     <div className="space-y-4">
       <div className="relative w-full aspect-video bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
-        {isStreaming ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            className="w-full h-full object-cover"
-          />
-        ) : currentPhoto ? (
-          <img
-            src={currentPhoto}
-            alt="Patient"
-            className="w-full h-full object-cover"
-          />
-        ) : (
-          <div className="text-gray-400 text-center">
-            <Camera className="w-16 h-16 mx-auto mb-2" />
-            <p>No photo</p>
-          </div>
+        {/* Video element is always in the DOM so videoRef is always valid */}
+        <video
+          ref={videoRef}
+          autoPlay
+          muted
+          playsInline
+          className={`w-full h-full object-cover ${isStreaming ? '' : 'hidden'}`}
+        />
+
+        {!isStreaming && (
+          currentPhoto ? (
+            <img
+              src={currentPhoto}
+              alt="Patient"
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="text-gray-400 text-center">
+              <Camera className="w-16 h-16 mx-auto mb-2" />
+              <p>No photo</p>
+            </div>
+          )
         )}
 
-        {}
         {isLoading && (
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
             <div className="text-white text-center">

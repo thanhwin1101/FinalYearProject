@@ -1,0 +1,299 @@
+[Vào Follow Mode]
+    |
+    v
+[Tắt R2 và R3 (line, PN532), Bật R1 (Huskylens, SR05, servo)]
+Chờ 300ms
+    |
+    v
+[Khởi tạo Follow mode]
+    - Huskylens: UART, chế độ tag recognition
+    - SR05 trái/phải: cấu hình trigger/echo
+    - Servo X: attach, set góc 95°, đọc analog feedback
+    - Servo Y: attach, set góc 45°
+    |
+    v
+[Gửi lệnh UART 0x01 (mode FOLLOW) cho STM32]
+    |
+    v
+[OLED hiển thị màn hình Follow (tag info, area, x, y, tường trái/phải)]
+    |
+    v
+[Vào vòng lặp điều khiển chính (tần số 20-30Hz)]
+    |
+    +-- Kiểm tra nút nhấn (double click) – ưu tiên cao nhất
+    |       |
+    |       +-- Nếu phát hiện double click
+    |               |
+    |               v
+    |           [Gửi lệnh dừng khẩn cấp: Vx=Vy=Vr=0 cho STM32]
+    |               |
+    |               v
+    |           [Thoát Follow Mode, chuyển sang Recovery Mode]
+    |               |
+    |               v
+    |           [Kết thúc Follow, không quay lại]
+    |
+    +-- Đọc dữ liệu từ Huskylens (tag ID, x, y, area)
+    |       |
+    |       +-- Nếu có tag (trong 1 giây gần nhất)
+    |       |       |
+    |       |       v
+    |       |   [Tính toán Vx, Vy, Vr dựa trên sai lệch x, y, area]
+    |       |       - x lệch → Vr
+    |       |       - y lệch → điều chỉnh Servo Y
+    |       |       - area lệch (xa/gần) → Vy
+    |       |       |
+    |       |       v
+    |       |   [Đọc SR05 trái/phải, tính khoảng cách]
+    |       |       |
+    |       |       - Nếu khoảng cách < ngưỡng (30cm) → điều chỉnh Vx (trượt ngang)
+    |       |       - Nếu cả hai đều gần → ưu tiên lùi hoặc giữ nguyên
+    |       |       |
+    |       |       v
+    |       |   [Gửi lệnh CMD 0x03 (Vx, Vy, Vr) cho STM32]
+    |       |       |
+    |       |       v
+    |       |   [Cập nhật OLED]
+    |       |
+    |       +-- Nếu mất tag (không có dữ liệu trong 1 giây)
+    |               |
+    |               v
+    |           [Chuyển sang Find Mode] (xem flow riêng)
+    |           Khi Find Mode kết thúc (tìm lại tag) → quay lại vòng lặp Follow
+    |
+    +-- (Nếu không có double click và có tag, lặp lại)
+
+    2. Find Mode (sub-mode của Follow)
+Mục đích
+Khi mất tag, tìm kiếm tag bằng cách quay trái/phải dựa trên thay đổi của SR05.
+
+Nếu tìm thấy tag → quay lại Follow.
+
+Nếu trong khi tìm kiếm có double click → chuyển thẳng sang Recovery Mode (ưu tiên).
+
+Điều kiện vào
+Từ Follow mode khi mất tag > 1 giây.
+
+Flow chi tiết
+text
+[Vào Find Mode]
+    |
+    v
+[OLED hiển thị "FIND - Searching...", kèm trạng thái tường trái/phải]
+    |
+    v
+[Đặt tốc độ chậm: gửi Vx = 100 mm/s, Vy = 0, Vr = 0]
+    |
+    v
+[Đặt biến đếm = 0 (số lần thử quay)]
+    |
+    v
+[Vòng lặp tìm kiếm]
+    |
+    +-- Kiểm tra nút nhấn (double click) – ưu tiên cao nhất
+    |       |
+    |       +-- Nếu phát hiện double click
+    |               |
+    |               v
+    |           [Gửi lệnh dừng khẩn cấp cho STM32]
+    |               |
+    |               v
+    |           [Thoát Find Mode, chuyển sang Recovery Mode]
+    |               |
+    |               v
+    |           [Kết thúc]
+    |
+    +-- Đọc SR05 trái và phải liên tục (mỗi 100ms)
+    |       |
+    |       v
+    |   [So sánh với trạng thái trước đó (có tường hay không)]
+    |       |
+    |       +-- Nếu có sự thay đổi (từ có → không hoặc ngược lại)
+    |               |
+    |               v
+    |           [Dừng xe: Vx=Vy=Vr=0]
+    |               |
+    |               v
+    |           [Xác định hướng quay ưu tiên]
+    |               - Nếu trái thay đổi → quay trái
+    |               - Nếu phải thay đổi → quay phải
+    |               - Nếu cả hai → ưu tiên trái
+    |               |
+    |               v
+    |           [Quay tại chỗ: Vr = ±50 độ/s, trong 1 giây]
+    |               |
+    |               v
+    |           [Trong khi quay, đọc Huskylens liên tục]
+    |               |
+    |               +-- Nếu thấy tag
+    |                       |
+    |                       v
+    |                   [Dừng quay, căn chỉnh tag về trung tâm]
+    |                       |
+    |                       v
+    |                   [Set Servo X = 95°, giữ Servo Y]
+    |                       |
+    |                       v
+    |                   [Thoát Find Mode, quay lại Follow Mode]
+    |               |
+    |               +-- Nếu không thấy tag sau khi quay xong
+    |                       |
+    |                       v
+    |                   [Tăng biến đếm, nếu đếm < 3 thì tiếp tục đi thẳng]
+    |                       |
+    |                       v
+    |                   [Nếu đếm >= 3]
+    |                           |
+    |                           v
+    |                       [Kêu buzzer 3 lần]
+    |                           |
+    |                           v
+    |                       [Tiếp tục đi thẳng vô hạn, không quay nữa]
+    |                       (hoặc báo lỗi backend và thoát Find Mode)
+    |
+    +-- Nếu không có thay đổi tường trong 5 giây
+            |
+            v
+        [Tăng biến đếm, tương tự xử lý như trên]
+
+3. Recovery Mode (đã cập nhật)
+Mục đích
+Chuyển từ Follow (hoặc Find) về Auto một cách an toàn, không cần ở MED.
+
+Tìm line bằng Huskylens (chế độ line tracking) và servo X quét.
+
+Sau khi có line, đọc 1 checkpoint bằng PN532 (bật nguồn R3), gửi lên backend để lấy route về MED.
+
+Chuyển sang Auto mode và thực hiện route về MED.
+
+Điều kiện vào
+Khi người dùng double click từ Follow hoặc Find (bất kỳ đâu, không cần MED).
+
+Cũng có thể được gọi từ các tình huống lỗi khác (ví dụ mất nguồn cảm biến).
+
+Flow chi tiết
+text
+[Vào Recovery Mode]
+    |
+    v
+[BẮT BUỘC: Gửi lệnh dừng khẩn cấp cho STM32 (Vx=Vy=Vr=0)]
+    |
+    v
+[Bật cả 3 relay: R1, R2, R3 (cấp nguồn tất cả cảm biến)]
+Chờ 300ms
+    |
+    v
+[Khởi tạo lại tất cả cảm biến]
+    - Line sensor (3 chân)
+    - PN532 (SPI)
+    - Huskylens (chế độ line tracking)
+    - SR05 (dự phòng, có thể không cần)
+    - Servo X, Servo Y
+    |
+    v
+[Đặt Servo Y = 100°, Servo X = 95° (vị trí trung tâm)]
+    |
+    v
+[OLED hiển thị "RECOVERY - Finding line..."]
+    |
+    v
+[=== GIAI ĐOẠN 1: TÌM LINE ===]
+    |
+    v
+[Quét Servo X từ 0° đến 180°, tốc độ chậm (1°/50ms)]
+    |
+    +-- Trong khi quét, đọc Huskylens (line tracking)
+    |       |
+    |       +-- Nếu Huskylens báo có line (tọa độ line trong tầm nhìn)
+    |               |
+    |               v
+    |           [Dừng Servo X tại góc đó]
+    |               |
+    |               v
+    |           [Điều khiển xe bằng Vx, Vy, Vr để đưa line vào trung tâm]
+    |           (Dùng Huskylens: line lệch → Vr, line xa → Vx)
+    |               |
+    |               v
+    |           [Đồng thời đọc 3 mắt line sensor]
+    |               |
+    |               +-- Khi line sensor trung tâm (hoặc ít nhất 1 mắt) active
+    |                       |
+    |                       v
+    |                   [Dừng xe, gửi Vx=Vy=Vr=0]
+    |                       |
+    |                       v
+    |                   [OLED: "Line found, aligning OK"]
+    |                       |
+    |                       v
+    |                   [Thoát khỏi vòng quét, chuyển sang GIAI ĐOẠN 2]
+    |
+    +-- Nếu quét hết 0-180° mà không thấy line
+            |
+            v
+        [OLED: "No line found! Retry?"]
+            |
+            v
+        [Kêu buzzer 3 lần, quay lại bước quét (tối đa 3 lần)]
+            |
+            v
+        [Nếu vẫn không có line, báo lỗi backend và thoát Recovery?]
+        (Có thể chuyển sang chế độ thủ công hoặc đứng yên)
+
+[=== GIAI ĐOẠN 2: ĐỌC CHECKPOINT ===]
+    |
+    v
+[OLED: "Reading checkpoint... Please present NFC tag"]
+    |
+    v
+[Đợi PN532 đọc được thẻ (checkpoint), timeout 30 giây]
+    |
+    +-- Nếu có thẻ
+    |       |
+    |       v
+    |   [Lấy checkpoint ID]
+    |       |
+    |       v
+    |   [OLED hiển thị "CP: XXXX"]
+    |       |
+    |       v
+    |   [ESP32 publish MQTT "robot/return_request" với checkpoint ID]
+    |       |
+    |       v
+    |   [Chờ backend trả về route (danh sách checkpoint) về MED, timeout 10s]
+    |       |
+    |       +-- Nếu nhận được route
+    |               |
+    |               v
+    |           [OLED: "Route received, switching to AUTO"]
+    |               |
+    |               v
+    |           [Tắt R1 (ngắt nguồn Huskylens, SR05, servo)]
+    |               |
+    |               v
+    |           [Giữ R2 và R3 (line + PN532)]
+    |               |
+    |               v
+    |           [Gọi initAutoSensors() để khởi tạo lại line và PN532]
+    |               |
+    |               v
+    |           [Gửi route xuống STM32 (CMD 0x02)]
+    |               |
+    |               v
+    |           [Chuyển sang Auto mode (trạng thái RUN)]
+    |               |
+    |               v
+    |           [Bắt đầu chạy route về MED]
+    |       |
+    |       +-- Nếu timeout hoặc lỗi backend
+    |               |
+    |               v
+    |           [OLED: "Route error! Stay in Recovery"]
+    |           (có thể thử lại hoặc báo lỗi)
+    |
+    +-- Nếu timeout đọc thẻ
+            |
+            v
+        [OLED: "No NFC tag! Exiting Recovery"]
+            |
+            v
+        [Tắt R1, R2, R3, quay về Follow? Hoặc đứng yên chờ lệnh]

@@ -1,7 +1,6 @@
-import { createContext, useContext, useEffect, useState, useCallback, useRef, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { useSerialRFID, SerialStatus } from '@/app/hooks/useSerialRFID';
-import { Usb, Radio, Loader2, X } from 'lucide-react';
-import { Button } from '@/app/components/ui/button';
+import { Radio, Loader2, X } from 'lucide-react';
 
 interface RFIDContextType {
   status: SerialStatus;
@@ -26,17 +25,10 @@ interface RFIDProviderProps {
 }
 
 export function RFIDProvider({ children }: RFIDProviderProps) {
-  const [showPrompt, setShowPrompt] = useState(false);
-  const [hasAttemptedConnect, setHasAttemptedConnect] = useState(false);
-
   const cardReadCallbacksRef = useRef<Set<(uid: string) => void>>(new Set());
 
   const handleCardRead = useCallback((uid: string) => {
-    console.log('[RFIDContext] Card read:', uid, 'Callbacks:', cardReadCallbacksRef.current.size);
-    cardReadCallbacksRef.current.forEach(callback => {
-      console.log('[RFIDContext] Calling callback with UID:', uid);
-      callback(uid);
-    });
+    cardReadCallbacksRef.current.forEach(callback => callback(uid));
   }, []);
 
   const {
@@ -44,32 +36,10 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
     lastUID,
     isSupported,
     error,
-    connect,
     disconnect
   } = useSerialRFID({
     onCardRead: handleCardRead
   });
-
-  useEffect(() => {
-    if (isSupported && !hasAttemptedConnect && status === 'disconnected') {
-
-      const timer = setTimeout(() => {
-        setShowPrompt(true);
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [isSupported, hasAttemptedConnect, status]);
-
-  const handleConnect = async () => {
-    setHasAttemptedConnect(true);
-    setShowPrompt(false);
-    await connect();
-  };
-
-  const handleDismiss = () => {
-    setHasAttemptedConnect(true);
-    setShowPrompt(false);
-  };
 
   const onCardRead = useCallback((callback: (uid: string) => void) => {
     console.log('[RFIDContext] Subscribing callback');
@@ -92,59 +62,6 @@ export function RFIDProvider({ children }: RFIDProviderProps) {
   return (
     <RFIDContext.Provider value={{ status, lastUID, isSupported, error, onCardRead }}>
       {children}
-
-      {}
-      {showPrompt && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 max-w-md mx-4 animate-in fade-in zoom-in duration-200">
-            <div className="flex items-start justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center">
-                  <Usb className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">Connect RFID Reader</h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Connect once to scan patient cards</p>
-                </div>
-              </div>
-              <button
-                onClick={handleDismiss}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4 mb-4">
-              <p className="text-sm text-gray-600 dark:text-gray-300">
-                📌 <strong>Instructions:</strong>
-              </p>
-              <ol className="text-sm text-gray-600 dark:text-gray-300 mt-2 space-y-1 list-decimal list-inside">
-                <li>Plug RFID reader into USB port</li>
-                <li>Click "Connect" button below</li>
-                <li>Select COM port (Arduino/CH340)</li>
-              </ol>
-            </div>
-
-            <div className="flex gap-3">
-              <Button
-                variant="outline"
-                onClick={handleDismiss}
-                className="flex-1"
-              >
-                Skip
-              </Button>
-              <Button
-                onClick={handleConnect}
-                className="flex-1 bg-blue-600 hover:bg-blue-700"
-              >
-                <Usb className="w-4 h-4 mr-2" />
-                Connect
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {}
       {status !== 'disconnected' && (

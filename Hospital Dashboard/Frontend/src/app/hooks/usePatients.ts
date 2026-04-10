@@ -32,7 +32,6 @@ function toFrontendPatient(bp: BackendPatient): Patient {
     id: bp._id,
     mrn: bp.mrn || '',
     fullName: bp.fullName || '',
-    cardNumber: bp.cardNumber || '',
     admissionDate: bp.admissionDate?.slice(0, 10) || '',
     status: (bp.status as Patient['status']) || 'Stable',
     primaryDoctor: bp.primaryDoctor || '',
@@ -55,7 +54,6 @@ function toBackendPatientData(patient: Partial<Patient>): CreatePatientData {
   return {
     mrn: patient.mrn || '',
     fullName: patient.fullName || '',
-    cardNumber: patient.cardNumber,
     admissionDate: patient.admissionDate,
     status: patient.status,
     primaryDoctor: patient.primaryDoctor,

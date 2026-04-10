@@ -2,7 +2,6 @@ export interface Patient {
   id: string;
   mrn: string;
   fullName: string;
-  cardNumber: string;
   admissionDate: string;
   status: PatientStatus;
   primaryDoctor: string;

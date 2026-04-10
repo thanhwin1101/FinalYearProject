@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { Battery, Send, XCircle, User, MapPin, Navigation, History, List } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { Battery, Send, XCircle, User, MapPin, Navigation, History, List, PersonStanding, Route } from 'lucide-react';
 import { Button } from '@/app/components/ui/button';
 import { Badge } from '@/app/components/ui/badge';
 import { Robot, RobotStatus } from '@/app/types/robot';
 import { Patient } from '@/app/types/patient';
 import { DeliveryHistoryTable, DeliveryHistory } from './RobotHistory';
+import { sendRobotCommand } from '@/app/api/robots';
 
 interface RobotManagementProps {
   robots: Robot[];
@@ -26,6 +27,23 @@ export function RobotManagement({
   deliveryHistory = []
 }: RobotManagementProps) {
   const [carryTab, setCarryTab] = useState<CarryTab>('status');
+  const [modeSwitching, setModeSwitching] = useState<Record<string, boolean>>({});
+  const [modeError, setModeError] = useState<Record<string, string>>({});
+
+  const switchMode = useCallback(async (robotId: string, mode: 'follow' | 'idle') => {
+    setModeSwitching(prev => ({ ...prev, [robotId]: true }));
+    setModeError(prev => ({ ...prev, [robotId]: '' }));
+    try {
+      const res = await sendRobotCommand(robotId, 'set_mode', mode);
+      if (!res.ok) {
+        setModeError(prev => ({ ...prev, [robotId]: res.error || 'Failed' }));
+      }
+    } catch {
+      setModeError(prev => ({ ...prev, [robotId]: 'Network error' }));
+    } finally {
+      setModeSwitching(prev => ({ ...prev, [robotId]: false }));
+    }
+  }, []);
 
   const carryRobots = robots.filter(r => r.type === 'Carry');
 
@@ -163,47 +181,99 @@ export function RobotManagement({
                     <th className="px-2 py-2 text-left font-medium text-gray-700">No.</th>
                     <th className="px-2 py-2 text-left font-medium text-gray-700">Device Name</th>
                     <th className="px-2 py-2 text-left font-medium text-gray-700">Status</th>
-                    <th className="px-2 py-2 text-left font-medium text-gray-700">Current Location</th>
+                    <th className="px-2 py-2 text-left font-medium text-gray-700">Location</th>
                     <th className="px-2 py-2 text-left font-medium text-gray-700">Destination</th>
                     <th className="px-2 py-2 text-left font-medium text-gray-700">Battery</th>
+                    <th className="px-2 py-2 text-left font-medium text-gray-700">Mode</th>
                   </tr>
                 </thead>
                 <tbody>
                   {carryRobots.length > 0 ? (
-                    carryRobots.map((robot, index) => (
-                      <tr key={robot.id} className="border-t hover:bg-gray-50">
-                        <td className="px-2 py-2 text-gray-900">{index + 1}</td>
-                        <td className="px-2 py-2 font-medium text-gray-900">{robot.name}</td>
-                        <td className="px-2 py-2">{getStatusBadge(robot.status)}</td>
-                        <td className="px-2 py-2 text-gray-900">
-                          <div className="flex items-center gap-1">
-                            <MapPin className="w-3 h-3 text-gray-500" />
-                            {robot.currentNode || robot.currentLocation || '-'}
-                          </div>
-                        </td>
-                        <td className="px-2 py-2 text-gray-900">
-                          <div className="flex items-center gap-1">
-                            {robot.destination ? (
-                              <>
-                                <Navigation className="w-3 h-3 text-blue-500" />
-                                {robot.destination}
-                              </>
-                            ) : '-'}
-                          </div>
-                        </td>
-                        <td className="px-2 py-2">
-                          <div className="flex items-center gap-1">
-                            <Battery className={`w-4 h-4 ${getBatteryColor(robot.batteryLevel)}`} />
-                            <span className={getBatteryColor(robot.batteryLevel)}>
-                              {robot.batteryLevel}%
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                    carryRobots.map((robot, index) => {
+                      const isFollow = (robot as any).robotMode === 'follow';
+                      const isSwitching = !!modeSwitching[robot.id];
+                      const errMsg = modeError[robot.id] || '';
+                      return (
+                        <tr key={robot.id} className="border-t hover:bg-gray-50">
+                          <td className="px-2 py-2 text-gray-900">{index + 1}</td>
+                          <td className="px-2 py-2 font-medium text-gray-900">{robot.name}</td>
+                          <td className="px-2 py-2">
+                            {isFollow
+                              ? <Badge className="bg-purple-100 text-purple-800">Follow</Badge>
+                              : getStatusBadge(robot.status)
+                            }
+                          </td>
+                          <td className="px-2 py-2 text-gray-900">
+                            <div className="flex items-center gap-1">
+                              <MapPin className="w-3 h-3 text-gray-500" />
+                              {robot.currentNode || robot.currentLocation || '-'}
+                            </div>
+                          </td>
+                          <td className="px-2 py-2 text-gray-900">
+                            <div className="flex items-center gap-1">
+                              {robot.destination ? (
+                                <>
+                                  <Navigation className="w-3 h-3 text-blue-500" />
+                                  {robot.destination}
+                                </>
+                              ) : '-'}
+                            </div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="flex items-center gap-1">
+                              <Battery className={`w-4 h-4 ${getBatteryColor(robot.batteryLevel)}`} />
+                              <span className={getBatteryColor(robot.batteryLevel)}>
+                                {robot.batteryLevel}%
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-2 py-2">
+                            <div className="flex flex-col gap-1 min-w-[130px]">
+                              <div className="flex gap-1">
+                                <button
+                                  disabled={isSwitching || isFollow}
+                                  onClick={() => switchMode(robot.id, 'follow')}
+                                  title="Chuyển sang chế độ đi theo người (yêu cầu quét MED trước)"
+                                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors
+                                    ${isFollow
+                                      ? 'bg-purple-200 text-purple-700 cursor-default'
+                                      : 'bg-purple-50 text-purple-600 hover:bg-purple-100 border border-purple-200'
+                                    } disabled:opacity-60`}
+                                >
+                                  <PersonStanding className="w-3 h-3" />
+                                  Follow
+                                </button>
+                                <button
+                                  disabled={isSwitching || !isFollow}
+                                  onClick={() => switchMode(robot.id, 'idle')}
+                                  title="Chuyển về chế độ tự hành (yêu cầu quét MED trước)"
+                                  className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors
+                                    ${!isFollow
+                                      ? 'bg-green-200 text-green-700 cursor-default'
+                                      : 'bg-green-50 text-green-600 hover:bg-green-100 border border-green-200'
+                                    } disabled:opacity-60`}
+                                >
+                                  <Route className="w-3 h-3" />
+                                  Auto
+                                </button>
+                              </div>
+                              {isSwitching && (
+                                <span className="text-xs text-gray-400">Sending…</span>
+                              )}
+                              {errMsg && (
+                                <span className="text-xs text-red-500">{errMsg}</span>
+                              )}
+                              <span className="text-xs text-gray-400 leading-tight">
+                                ⚠ Quét MED trước
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   ) : (
                     <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-gray-500">
+                      <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
                         No Carry Robot available
                       </td>
                     </tr>

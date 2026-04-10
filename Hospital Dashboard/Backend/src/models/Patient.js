@@ -40,7 +40,6 @@ const patientSchema = new mongoose.Schema({
 
   primaryDoctor: { type: String, required: true },
 
-  cardNumber: { type: String, required: true },
   relativeName: { type: String, required: true },
   relativePhone: { type: String, required: true },
   insurancePolicyId: { type: String },

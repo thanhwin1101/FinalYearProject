@@ -7,6 +7,7 @@ import TransportMission from '../models/TransportMission.js';
 import Alert from '../models/Alert.js';
 
 import { publishMissionAssign, publishMissionCancel } from '../services/mqttService.js';
+import { LOW_BATTERY_PCT, ROBOT_ONLINE_TIMEOUT_MS } from '../utils/constants.js';
 
 const router = express.Router();
 
@@ -305,7 +306,7 @@ router.post('/delivery', async (req, res) => {
     const map = await MapGraph.findOne({ mapId }).lean();
     if (!map) return res.status(404).send('Map not found');
 
-    const onlineSince = new Date(Date.now() - 30_000);
+    const onlineSince = new Date(Date.now() - ROBOT_ONLINE_TIMEOUT_MS);
     const carry = await Robot.findOne({
       type: 'carry',
       status: 'idle',
@@ -379,11 +380,10 @@ router.post('/delivery', async (req, res) => {
     );
 
     publishMissionAssign(carry.robotId, {
-      payloadVersion: 2,
       missionId,
       status: 'pending',
       patientName,
-      destBed: normalBedId,
+      bedId: normalBedId,
       outboundRoute,
       returnRoute
     });
@@ -483,13 +483,13 @@ router.put('/carry/:missionId/progress', async (req, res) => {
       });
     }
 
-    if (note) m.notes.push(String(note).slice(0, 200));
+    if (note) m.notes.push({ text: String(note).slice(0, 200), timestamp: new Date() });
     await m.save();
 
     if (typeof batteryLevel === 'number') {
       await Robot.updateOne({ robotId: m.carryRobotId }, { $set: { batteryLevel } });
 
-      if (batteryLevel <= 20 && !m.lowBatteryAlerted) {
+      if (batteryLevel < LOW_BATTERY_PCT && !m.lowBatteryAlerted) {
         m.lowBatteryAlerted = true;
         await m.save();
 
@@ -522,7 +522,7 @@ router.post('/carry/:missionId/complete', async (req, res) => {
 
     m.status = (result === 'failed') ? 'failed' : 'completed';
     m.completedAt = new Date();
-    if (note) m.notes.push(String(note).slice(0, 200));
+    if (note) m.notes.push({ text: String(note).slice(0, 200), timestamp: new Date() });
     await m.save();
 
     await Robot.updateOne(
@@ -556,7 +556,7 @@ router.post('/carry/:missionId/cancel', async (req, res) => {
     m.cancelRequestedAt = m.cancelRequestedAt || new Date();
     m.cancelledAt = new Date();
     m.cancelledBy = cancelledBy || 'web';
-    if (note) m.notes.push(String(note).slice(0, 200));
+    if (note) m.notes.push({ text: String(note).slice(0, 200), timestamp: new Date() });
     await m.save();
 
     await Robot.updateOne(
@@ -587,7 +587,7 @@ router.post('/carry/:missionId/returned', async (req, res) => {
     if (!m) return res.status(404).send('Mission not found');
 
     if (!m.returnedAt) m.returnedAt = new Date();
-    if (note) m.notes.push(String(note).slice(0, 200));
+    if (note) m.notes.push({ text: String(note).slice(0, 200), timestamp: new Date() });
     await m.save();
 
     await Robot.updateOne(
@@ -608,7 +608,7 @@ router.get('/delivery/history', async (req, res) => {
     const query = {};
 
     if (robotId) query.carryRobotId = robotId;
-    if (patientId) query.patientId = patientId;
+    if (patientId) query.patientName = { $regex: patientId, $options: 'i' };
     if (status) query.status = status;
 
     if (startDate || endDate) {
@@ -638,19 +638,17 @@ router.get('/delivery/history', async (req, res) => {
         missionId: m.missionId,
         robotId: m.carryRobotId,
         robotName: m.carryRobotId,
-        patientId: m.patientId,
         patientName: m.patientName || 'Unknown',
-        destinationRoom: m.destinationRoomId,
-        destinationBed: m.destinationBed,
+        destinationBed: m.bedId,
+        destinationNodeId: m.destinationNodeId || null,
         status: m.status,
         createdAt: m.createdAt,
         startedAt: m.startedAt,
         completedAt: m.completedAt,
         cancelledAt: m.cancelledAt,
         returnedAt: m.returnedAt,
-        duration: duration,
-        itemCarried: m.itemDescription,
-        notes: m.notes
+        duration,
+        notes: (m.notes || []).map(n => (typeof n === 'string' ? n : n.text))
       };
     });
 

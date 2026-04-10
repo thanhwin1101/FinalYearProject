@@ -15,12 +15,12 @@ const routePointSchema = new mongoose.Schema({
 
   action: {
     type: String,
-    enum: ['F', 'L', 'R'],
+    enum: ['F', 'L', 'R', 'B'],  // B = 180° U-turn (used by return-route firstAction)
     default: 'F'
   },
 
   actions: {
-    type: [{ type: String, enum: ['F', 'L', 'R'] }],
+    type: [{ type: String, enum: ['F', 'L', 'R', 'B'] }],
     default: []
   }
 }, { _id: false });
@@ -55,9 +55,11 @@ const transportMissionSchema = new mongoose.Schema({
 
   status: {
     type: String,
-    enum: ['pending', 'en_route', 'arrived', 'completed', 'failed', 'cancelled'],
+    enum: ['pending', 'en_route', 'arrived', 'completed', 'failed', 'cancelled', 'returning'],
     default: 'pending'
   },
+
+  currentNodeId: { type: String, default: null },
 
   requestedAt: { type: Date, default: Date.now },
   assignedAt: { type: Date },
@@ -71,7 +73,7 @@ const transportMissionSchema = new mongoose.Schema({
   cancelledBy: { type: String, default: null },
 
   lowBatteryAlerted: { type: Boolean, default: false },
-  notes: [{ type: String }]
+  notes: [{ text: { type: String }, timestamp: { type: Date, default: Date.now } }]
 }, { timestamps: true });
 
 transportMissionSchema.index({ carryRobotId: 1, requestedAt: -1 });

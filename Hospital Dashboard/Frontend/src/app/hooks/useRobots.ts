@@ -1,21 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   getCarryRobotsStatus,
-  CarryStatusResponse,
   CarryRobotStatus,
 } from '@/app/api/robots';
-import {
-  getMissions,
-  cancelMission as apiCancelMission,
-  cancelDeliveryMission as apiCancelDeliveryMission,
-  TransportMission
-} from '@/app/api/missions';
 import { Robot, RobotStatus } from '@/app/types/robot';
 
 function mapStatus(backendStatus: string): RobotStatus {
   const statusMap: Record<string, RobotStatus> = {
     'idle': 'Idle',
     'busy': 'Moving',
+    'follow': 'Moving',
     'charging': 'Idle',
     'maintenance': 'Error',
     'offline': 'Error',
@@ -36,13 +30,12 @@ function carryRobotToFrontend(robot: CarryRobotStatus): Robot {
     taskDescription: robot.carrying !== '—' ? `Carrying: ${robot.carrying}` : undefined,
     batteryLevel: robot.batteryLevel || 0,
     lastUpdated: new Date().toISOString(),
+    robotMode: robot.robotMode ?? (robot.status === 'follow' ? 'follow' : 'auto'),
   };
 }
 
 export function useRobots(pollInterval: number = 5000) {
   const [robots, setRobots] = useState<Robot[]>([]);
-  const [missions, setMissions] = useState<TransportMission[]>([]);
-  const [carryStatus, setCarryStatus] = useState<CarryStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -50,23 +43,11 @@ export function useRobots(pollInterval: number = 5000) {
   const fetchRobots = useCallback(async () => {
     try {
       setError(null);
-
-      const [carryData, missionsData] = await Promise.all([
-        getCarryRobotsStatus().catch(() => null),
-        getMissions({ limit: 50 }).catch(() => []),
-      ]);
-
-      if (carryData) {
-        setCarryStatus(carryData);
-      }
-      setMissions(missionsData);
-
+      const carryData = await getCarryRobotsStatus().catch(() => null);
       const allRobots: Robot[] = [];
-
       if (carryData?.robots) {
         allRobots.push(...carryData.robots.map(carryRobotToFrontend));
       }
-
       setRobots(allRobots);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch robots';
@@ -91,52 +72,10 @@ export function useRobots(pollInterval: number = 5000) {
     };
   }, [fetchRobots, pollInterval]);
 
-  const cancelTask = useCallback(async (robotId: string) => {
-    try {
-      setError(null);
-
-      const activeMission = missions.find(
-        m => m.carryRobotId === robotId &&
-        ['pending', 'en_route', 'arrived'].includes(m.status)
-      );
-
-      if (activeMission) {
-
-        try {
-          await apiCancelDeliveryMission(activeMission.missionId, 'web');
-        } catch {
-
-          await apiCancelMission(activeMission.missionId);
-        }
-        await fetchRobots();
-      } else {
-
-        setRobots(prev => prev.map(robot =>
-          robot.id === robotId
-            ? { ...robot, status: 'Idle', destination: '', taskDescription: undefined }
-            : robot
-        ));
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to cancel task';
-      setError(message);
-      console.error('Failed to cancel task:', err);
-      throw err;
-    }
-  }, [missions, fetchRobots]);
-
   const refresh = useCallback(() => {
     setLoading(true);
     fetchRobots();
   }, [fetchRobots]);
 
-  return {
-    robots,
-    missions,
-    carryStatus,
-    loading,
-    error,
-    cancelTask,
-    refresh,
-  };
+  return { robots, loading, error, refresh };
 }

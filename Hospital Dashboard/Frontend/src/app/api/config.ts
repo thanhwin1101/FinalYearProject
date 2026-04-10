@@ -15,6 +15,8 @@ export const API_ENDPOINTS = {
 
   robots: '/api/robots',
   robotsCarryStatus: '/api/robots/carry/status',
+  robotsLiveStream: '/api/robots/live',
+  robotsCommand: '/api/robots',  // dùng: /api/robots/:id/command
 
 
   maps: '/api/maps',

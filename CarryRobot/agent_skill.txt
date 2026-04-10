@@ -1,0 +1,153 @@
+Agent Skill: robot_esp32_stm32_mqtt_control
+
+Mô tả
+
+Skill này cung cấp thiết kế hoàn chỉnh cho một hệ thống robot sử dụng ESP32 (master) và STM32 (slave). Robot có thể hoạt động ở nhiều chế độ (Auto, Follow, Find, Recovery), điều khiển bằng MQTT từ backend, chuyển đổi chế độ bằng nút nhấn (double click) khi ở checkpoint MED. Hệ thống sử dụng relay 2 kênh để cấp/ngắt nguồn cho từng nhóm cảm biến, có màn hình OLED hiển thị trạng thái chi tiết, WiFiManager để cấu hình mạng, và giao tiếp UART giữa hai vi điều khiển với giao thức tùy chỉnh.
+
+Inputs
+
+· Cấu hình WiFi & MQTT (server, port, user, pass) – nhập qua WiFiManager portal.
+· Lệnh từ backend qua MQTT:
+  · Route mới (danh sách checkpoint, tên bệnh nhân, đích)
+  · Hủy nhiệm vụ
+  · Yêu cầu trạng thái
+· Nút nhấn vật lý (GPIO36) – nhấn giữ để vào portal, double click để chuyển mode (khi ở MED và IDLE).
+· Cảm biến:
+  · PN532 (SPI) – đọc checkpoint NFC
+  · 3 mắt dò line (digital)
+  · ToF VL53L0X (I2C) – tránh vật cản
+  · Huskylens (UART) – nhận diện tag hoặc line
+  · 2x SR05 (GPIO) – phát hiện tường trái/phải
+  · Servo X (PWM + analog feedback)
+  · Servo Y (PWM)
+· Nguồn pin 12V – đo qua cầu phân áp vào GPIO35.
+
+Outputs
+
+· Điều khiển 4 motor mecanum qua 2 L298N (PWM + direction).
+· Gửi dữ liệu lên backend qua MQTT:
+  · Checkpoint đã đến
+  · Phần trăm pin
+  · Trạng thái lỗi (ToF cản, mất line, …)
+  · Yêu cầu route quay về (gửi checkpoint hiện tại)
+· Hiển thị OLED – theo từng mode (xem phần “Màn hình OLED”).
+· Buzzer – phát tín hiệu xác nhận / cảnh báo.
+
+Các bước thực hiện (workflow)
+
+1. Khởi tạo
+
+· ESP32 khởi động, kiểm tra nút nhấn giữ (>3s) → vào WiFiManager portal.
+· Nếu không, đọc cấu hình từ bộ nhớ, kết nối WiFi và MQTT.
+· Hiển thị trạng thái kết nối trên OLED.
+· Mặc định: Auto mode, Relay 1 ON (PN532 + line sensor), Relay 2 OFF.
+· Chờ lệnh từ backend hoặc nút nhấn.
+
+2. Vòng lặp chính (FreeRTOS tasks)
+
+· MQTT task: nhận route, gửi checkpoint, xử lý lệnh hủy.
+· UART task: giao tiếp với STM32 (nhận pin, checkpoint, gửi lệnh điều khiển).
+· Control task: state machine cho các mode (Auto, Follow, Find, Recovery).
+· OLED task: cập nhật màn hình mỗi 200ms.
+· Button task: debounce, phát hiện double click, kiểm tra điều kiện chuyển mode.
+
+3. Auto Mode
+
+· Điều kiện vào: từ IDLE, nhận route từ backend, bấm nút để start.
+· Relay: Relay 1 ON (PN532 + line), Relay 2 OFF.
+· STM32 nhận route, dùng line sensor để đi theo line, PN532 để xác nhận checkpoint, ToF để tránh vật cản (<20cm thì dừng).
+· Khi đến checkpoint → STM32 báo ID lên ESP32 → ESP32 gửi MQTT lên backend.
+· Nếu nhận route mới trong khi chạy → hủy route cũ (gửi CMD 0x05), nhận route mới.
+· Nếu bị hủy nhiệm vụ → thực hiện Return to Base.
+· Kết thúc route → STM32 tự quay 180°, chờ nút nhấn, sau đó gửi yêu cầu route về MED.
+
+4. Follow Mode
+
+· Chuyển từ Auto bằng double click (chỉ khi ở MED và IDLE).
+· Relay: Relay 1 OFF, Relay 2 ON (Huskylens + SR05).
+· ESP32 đặt Huskylens ở chế độ tag, Servo Y=45°, Servo X=95°.
+· Đọc tag (x, y, area) → tính Vx, Vy, Vr gửi xuống STM32.
+· Điều chỉnh Servo Y theo độ cao tag.
+· SR05 trái/phải để giữ khoảng cách với tường (điều chỉnh Vx).
+· Nếu mất tag >1s → chuyển sang Find Mode.
+
+5. Find Mode (sub-mode of Follow)
+
+· Giảm tốc, đi thẳng.
+· Quan sát SR05 thay đổi tường → dừng, quay về hướng không có tường (ưu tiên trái).
+· Nếu tìm thấy tag → quay xe bám theo, Servo X=95°, thoát Find.
+· Nếu sau 3 lần quay không thấy → buzzer 3 lần, tiếp tục đi thẳng.
+
+6. Recovery Mode (Follow → Auto)
+
+· Khi double click để chuyển từ Follow về Auto (tại MED).
+· Bật cả hai relay (cấp nguồn tất cả cảm biến).
+· Servo Y=100°, Servo X=95°.
+· Huskylens chuyển sang chế độ tìm line.
+· Quét servo X để tìm line, khi thấy → điều khiển xe để line sensor trung tâm nhận line.
+· Đọc 1 checkpoint từ PN532 → gửi lên backend → nhận route về MED → chuyển sang Auto mode (Relay 1 ON, Relay 2 OFF) và thực hiện route.
+
+7. Return to Base (khi bị hủy nhiệm vụ)
+
+· ESP32 gửi CMD 0x05 → STM32 dừng ngay.
+· STM32 đọc checkpoint hiện tại (PN532) → gửi ID lên ESP32.
+· ESP32 publish ID lên MQTT topic robot/return_request.
+· Backend trả về route (danh sách checkpoint) → ESP32 gửi route cho STM32.
+· Trong khi chạy route:
+  · Mỗi checkpoint đến, STM32 gửi ID lên ESP32.
+  · Nếu ID không khớp với ID mong đợi trong route → STM32 phanh, quay 180°, sau đó tiếp tục (hoặc yêu cầu lại route từ checkpoint hiện tại).
+
+Giao thức UART ESP32 ↔ STM32
+
+Frame format: [STX=0x7E][LEN][CMD][DATA...][CRC8]
+
+CMD (ESP→STM32) Tên Data
+0x01 Set Mode 0=AUTO,1=FOLLOW,2=RECOVERY
+0x02 Send Route [count][id1][id2]... (2 byte mỗi id)
+0x03 Direct Vel int16_t Vx, Vy, Vr
+0x04 Request Status none
+0x05 Cancel Mission none
+0x06 Confirm Arrival uint16_t checkpointID
+
+CMD (STM32→ESP) Tên Data
+0x81 Battery uint8_t percent (0-100)
+0x82 Checkpoint Reached uint16_t id
+0x83 Obstacle none
+0x84 Ack uint8_t cmd_ref
+0x85 Mission Complete none
+0x86 Checkpoint Mismatch uint16_t received, expected
+
+Màn hình OLED (chi tiết cho từng mode)
+
+Đã thiết kế sẵn trong phần trả lời trước (xem các hình vẽ ASCII). Có thể triển khai bằng thư viện U8g2.
+
+Yêu cầu code cụ thể
+
+Skill này yêu cầu AI sinh ra code đầy đủ cho cả ESP32 và STM32, bao gồm:
+
+· ESP32: WiFiManager, MQTT (PubSubClient), UART protocol, FreeRTOS tasks, điều khiển servo, đọc cảm biến, xử lý nút, hiển thị OLED.
+· STM32: Điều khiển 2 L298N (4 motor mecanum), đọc line sensor, PN532 SPI, ToF I2C, gửi phản hồi qua UART, state machine.
+· Kèm sơ đồ đấu dây chi tiết (bảng chân).
+
+Cách sử dụng skill này
+
+Người dùng chỉ cần gọi:
+Hãy triển khai agent skill 'robot_esp32_stm32_mqtt_control'
+Sau đó, AI sẽ sinh toàn bộ code, hướng dẫn đấu dây và giải thích thuật toán.
+
+Lưu ý
+
+· Pin phải ≥30% mới cho phép thực thi lệnh.
+· Chuyển mode chỉ được phép khi robot ở checkpoint MED và đang IDLE.
+· Khi mất kết nối MQTT, OLED thông báo và tự động kết nối lại.
+
+Relay	GPIO	Nhánh nguồn
+R1 PIN_RELAY_VISION
+18
+HuskyLens + 2 servo + 2× SR04/SR05
+R2 PIN_RELAY_LINE
+19
+Cảm biến dò line (STM32)
+R3 PIN_RELAY_NFC
+23
+PN532 (cấp nguồn module)

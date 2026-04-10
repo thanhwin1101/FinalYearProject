@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useForm } from 'react-hook-form';
-import { X, Save, RotateCcw, Sparkles, CalendarIcon, Radio } from 'lucide-react';
-import { useRFIDContext } from '@/app/contexts/RFIDContext';
+import { useState, useEffect } from 'react';
+import { Controller, useForm } from 'react-hook-form';
+import { X, Save, RotateCcw, Sparkles, CalendarIcon } from 'lucide-react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import { Button } from '@/app/components/ui/button';
@@ -16,7 +15,7 @@ import { generateMRN } from '@/app/utils/patient-helpers';
 interface PatientFormProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (patient: Patient, photoFile?: File) => void;
+  onSave: (patient: Patient, photoFile?: File) => void | Promise<void>;
   editingPatient?: Patient | null;
   existingPatients?: Patient[];
 }
@@ -24,7 +23,6 @@ interface PatientFormProps {
 interface FormData {
   fullName: string;
   mrn: string;
-  cardNumber: string;
   admissionDate: string;
   status: string;
   primaryDoctor: string;
@@ -53,40 +51,10 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
   const [photo, setPhoto] = useState<string>('');
   const [photoFile, setPhotoFile] = useState<File | null>(null);
   const [selectedBedId, setSelectedBedId] = useState<string>('');
-  const [duplicateCardError, setDuplicateCardError] = useState<string>('');
-  const { register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormData>();
+  const { control, register, handleSubmit, reset, setValue, watch, formState: { errors } } = useForm<FormData>();
 
   const mrnValue = watch('mrn');
-  const cardNumberValue = watch('cardNumber');
-
-  const { status: rfidStatus, isSupported: rfidSupported, onCardRead } = useRFIDContext();
-
-  const checkDuplicateCard = useCallback((uid: string) => {
-    const duplicate = existingPatients.find(
-      p => p.cardNumber?.toUpperCase() === uid.toUpperCase() && p.id !== editingPatient?.id
-    );
-    if (duplicate) {
-      setDuplicateCardError(`⚠️ This card is already assigned to patient: ${duplicate.fullName} (${duplicate.mrn})`);
-      return true;
-    }
-    setDuplicateCardError('');
-    return false;
-  }, [existingPatients, editingPatient]);
-
-  useEffect(() => {
-    if (isOpen) {
-      console.log('[PatientForm] Subscribing to RFID events');
-      const unsubscribe = onCardRead((uid: string) => {
-        console.log('[PatientForm] Received UID:', uid);
-        setValue('cardNumber', uid, { shouldValidate: true });
-        checkDuplicateCard(uid);
-      });
-      return () => {
-        console.log('[PatientForm] Unsubscribing from RFID events');
-        unsubscribe();
-      };
-    }
-  }, [isOpen, onCardRead, setValue, checkDuplicateCard]);
+  void mrnValue; void existingPatients;
 
   useEffect(() => {
     if (isOpen) {
@@ -95,7 +63,6 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
         reset({
           fullName: editingPatient.fullName,
           mrn: editingPatient.mrn,
-          cardNumber: editingPatient.cardNumber,
           admissionDate: editingPatient.admissionDate,
           status: editingPatient.status,
           primaryDoctor: editingPatient.primaryDoctor,
@@ -113,7 +80,6 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
         reset({
           fullName: '',
           mrn: '',
-          cardNumber: '',
           admissionDate: new Date().toISOString().split('T')[0],
           status: 'Stable',
           primaryDoctor: '',
@@ -134,12 +100,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
     setValue('mrn', generateMRN());
   };
 
-  const onSubmit = (data: FormData) => {
-
-    if (duplicateCardError) {
-      return;
-    }
-
+  const onSubmit = async (data: FormData) => {
     const patient: Patient = {
       id: editingPatient?.id || crypto.randomUUID(),
       ...data,
@@ -152,7 +113,7 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
       createdAt: editingPatient?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    onSave(patient, photoFile || undefined);
+    await Promise.resolve(onSave(patient, photoFile || undefined));
     handleReset();
     onClose();
   };
@@ -162,12 +123,11 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
     setPhoto('');
     setPhotoFile(null);
     setSelectedBedId('');
-    setDuplicateCardError('');
   };
 
   const handleBedIdChange = (value: string) => {
     setSelectedBedId(value);
-    setValue('roomBedId', value);
+    setValue('roomBedId', value, { shouldValidate: true, shouldDirty: true });
   };
 
   return (
@@ -238,40 +198,6 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
             </div>
 
             <div className="space-y-3">
-              <Label htmlFor="cardNumber" className="text-base font-medium">Card Number (RFID/UID) *</Label>
-              <div className="flex gap-3 items-center">
-                <Input
-                  id="cardNumber"
-                  {...register('cardNumber', { required: 'Card number is required' })}
-                  readOnly
-                  placeholder={rfidStatus === 'connected' ? '🔄 Place card on reader to scan...' : '⚠️ Waiting for RFID reader connection...'}
-                  className={`flex-1 h-12 text-base font-mono bg-gray-50 cursor-not-allowed ${rfidStatus === 'connected' ? 'border-green-300 focus:border-green-500' : 'border-orange-300'} ${duplicateCardError ? 'border-red-500' : ''}`}
-                />
-                {rfidStatus === 'connected' && (
-                  <div className="flex items-center gap-2 text-green-600">
-                    <Radio className="w-5 h-5 animate-pulse" />
-                    <span className="text-sm font-medium">Ready</span>
-                  </div>
-                )}
-              </div>
-              {duplicateCardError && (
-                <p className="text-sm text-red-600 font-medium bg-red-50 p-2 rounded border border-red-200">{duplicateCardError}</p>
-              )}
-              {rfidStatus === 'connected' && !duplicateCardError && (
-                <p className="text-sm text-green-600">✓ RFID reader connected. Place card on reader to scan automatically.</p>
-              )}
-              {rfidStatus === 'disconnected' && rfidSupported && (
-                <p className="text-sm text-orange-500">⚠️ RFID reader not connected. Please reload page and click "Connect" in popup.</p>
-              )}
-              {!rfidSupported && (
-                <p className="text-xs text-red-500">❌ Browser does not support Web Serial API. Please use Chrome or Edge.</p>
-              )}
-              {errors.cardNumber && (
-                <p className="text-base text-red-600">{errors.cardNumber.message}</p>
-              )}
-            </div>
-
-            <div className="space-y-3">
               <Label htmlFor="admissionDate" className="text-base font-medium">Admission Date *</Label>
               <div className="relative">
                 <DatePicker
@@ -296,17 +222,26 @@ export function PatientForm({ isOpen, onClose, onSave, editingPatient, existingP
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="space-y-2">
               <Label htmlFor="status" className="text-base font-medium">Patient Status *</Label>
-              <Select value={watch('status')} onValueChange={(value) => setValue('status', value)}>
-                <SelectTrigger className="h-12 text-base">
-                  <SelectValue placeholder="Select Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PATIENT_STATUSES.map(status => (
-                    <SelectItem key={status} value={status}>{status}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <input type="hidden" {...register('status', { required: 'Status is required' })} />
+              <Controller
+                name="status"
+                control={control}
+                rules={{ required: 'Status is required' }}
+                render={({ field }) => (
+                  <Select
+                    value={field.value || 'Stable'}
+                    onValueChange={(value) => field.onChange(value)}
+                  >
+                    <SelectTrigger className="h-12 text-base">
+                      <SelectValue placeholder="Select Status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PATIENT_STATUSES.map(status => (
+                        <SelectItem key={status} value={status}>{status}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
               {errors.status && (
                 <p className="text-base text-red-600">{errors.status.message}</p>
               )}

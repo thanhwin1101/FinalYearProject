@@ -179,7 +179,6 @@ function toPatientSummary(p) {
     ward: p.ward,
     roomBed: p.roomBed,
     primaryDoctor: p.primaryDoctor,
-    cardNumber: p.cardNumber,
     relativeName: p.relativeName,
     relativePhone: p.relativePhone,
     photoUrl: p.photoUrl
@@ -214,49 +213,6 @@ r.get('/by-bed/:bedId', async (req, res) => {
   }
 });
 
-r.get('/by-card/:cardNumber', async (req, res) => {
-  try {
-    const cardNumber = String(req.params.cardNumber || '').trim().toUpperCase();
-    if (!cardNumber) return res.status(400).json({ message: 'cardNumber required' });
-
-    const normalizedCard = cardNumber.replace(/[:\-\s]/g, '');
-
-    const p = await Patient.findOne({
-      $or: [
-        { cardNumber: cardNumber },
-        { cardNumber: normalizedCard },
-        { cardNumber: { $regex: new RegExp('^' + normalizedCard + '$', 'i') } }
-      ],
-      status: { $not: /^discharged$/i }
-    }).lean();
-
-    if (!p) {
-      return res.status(404).json({
-        found: false,
-        message: 'Patient not found with this card'
-      });
-    }
-
-    res.json({
-      found: true,
-      patient: {
-        _id: p._id,
-        patientId: p._id.toString(),
-        fullName: p.fullName,
-        mrn: p.mrn,
-        status: p.status,
-        roomBed: p.roomBed,
-        department: p.department,
-        primaryDoctor: p.primaryDoctor,
-        cardNumber: p.cardNumber,
-        photoUrl: p.photoUrl
-      }
-    });
-  } catch (e) {
-    console.error('Get patient by card error:', e);
-    res.status(500).json({ message: e.message || 'Load patient by card failed' });
-  }
-});
 
 r.get('/meta', async (_req, res) => {
   const statuses = ['Stable', 'Under Observation', 'Critical', 'Discharged'];
@@ -294,7 +250,6 @@ r.get('/', async (req, res) => {
       list = list.filter(p =>
         norm(p.fullName || '').includes(target) ||
         norm(p.mrn || '').includes(target) ||
-        norm(p.cardNumber || '').includes(target) ||
         norm(p.primaryDoctor || '').includes(target)
       );
     }
@@ -343,13 +298,12 @@ r.post('/', upload.single('photo'), async (req, res) => {
       ward: body.ward ? String(body.ward).trim() : undefined,
       roomBed: body.roomBed ? String(body.roomBed).trim() : undefined,
       primaryDoctor: String(body.primaryDoctor || '').trim(),
-      cardNumber: String(body.cardNumber || '').trim(),
       relativeName: String(body.relativeName || '').trim(),
       relativePhone: String(body.relativePhone || '').trim(),
       insurancePolicyId: body.insurancePolicyId ? String(body.insurancePolicyId).trim() : undefined
     };
 
-    const required = ['fullName','mrn','admissionDate','status','primaryDoctor','cardNumber','relativeName','relativePhone','roomBed'];
+    const required = ['fullName','mrn','admissionDate','status','primaryDoctor','relativeName','relativePhone','roomBed'];
     for (const k of required) {
       if (!doc[k]) return res.status(400).json({ message: `${k} is required` });
     }
@@ -411,7 +365,6 @@ r.put('/:id', upload.single('photo'), async (req, res) => {
     assignIf('department', body.department ? String(body.department).trim() : undefined);
     assignIf('ward', body.ward ? String(body.ward).trim() : undefined);
     assignIf('primaryDoctor', body.primaryDoctor ? String(body.primaryDoctor).trim() : undefined);
-    assignIf('cardNumber', body.cardNumber ? String(body.cardNumber).trim() : undefined);
     assignIf('relativeName', body.relativeName ? String(body.relativeName).trim() : undefined);
     assignIf('relativePhone', body.relativePhone ? String(body.relativePhone).trim() : undefined);
     assignIf('insurancePolicyId', body.insurancePolicyId ? String(body.insurancePolicyId).trim() : undefined);

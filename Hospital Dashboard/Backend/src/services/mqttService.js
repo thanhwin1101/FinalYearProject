@@ -3,6 +3,16 @@ import Robot from '../models/Robot.js';
 import TransportMission from '../models/TransportMission.js';
 import MapGraph from '../models/MapGraph.js';
 import Alert from '../models/Alert.js';
+import { LOW_BATTERY_PCT, DEFAULT_MAP_ID } from '../utils/constants.js';
+import {
+  ROUTE_TEST_MED_TO_R4M3,
+  checkpointIdToName,
+  routeReturnMedFrom,
+} from '../utils/checkpointIds.js';
+
+// Lazy import to avoid circular dependency (robots route imports from here indirectly)
+let _emitRobotPosition = null;
+export function setRobotPositionEmitter(fn) { _emitRobotPosition = fn; }
 
 const MQTT_BROKER = process.env.MQTT_BROKER || 'mqtt://localhost:1883';
 const MQTT_USER = process.env.MQTT_USER || 'hospital_backend';
@@ -15,7 +25,16 @@ const TOPICS = {
   MISSION_COMPLETE: 'hospital/robots/+/mission/complete',
   MISSION_RETURNED: 'hospital/robots/+/mission/returned',
   POSITION_REPORT: 'hospital/robots/+/position/waiting_return',
+  ALERT: 'hospital/robots/+/alert',
 };
+
+/** ESP32_stm32_stack: PubSubClient topics (Preferences có thể đổi; env override) */
+const STACK_CMD_TOPIC = process.env.MQTT_STACK_CMD_TOPIC || 'carry/robot/cmd';
+const STACK_EVT_TOPIC = process.env.MQTT_STACK_EVT_TOPIC || 'carry/robot/evt';
+const STACK_RETURN_TOPIC = process.env.MQTT_STACK_RETURN_TOPIC || 'robot/return_request';
+export const STACK_ROBOT_ID = process.env.MQTT_STACK_ROBOT_ID || 'carry-stack-1';
+
+const lastStackCpByRobot = new Map();
 
 let client = null;
 let connected = false;
@@ -79,6 +98,16 @@ export function initMqtt() {
         }
       });
     });
+
+    for (const t of [STACK_EVT_TOPIC, STACK_RETURN_TOPIC]) {
+      client.subscribe(t, { qos: 0 }, (err) => {
+        if (err) {
+          console.error(`[MQTT] Subscribe error for ${t}:`, err.message);
+        } else {
+          console.log(`[MQTT] Subscribed to ${t} (carry stack bridge)`);
+        }
+      });
+    }
   });
 
   client.on('disconnect', () => {
@@ -95,8 +124,138 @@ export function initMqtt() {
   return client;
 }
 
+async function handleCarryStackTopic(topic, message) {
+  const robotId = STACK_ROBOT_ID;
+  const ts = Date.now();
+  try {
+    const payload = JSON.parse(message.toString());
+    if (topic === STACK_RETURN_TOPIC) {
+      const cp = Number(payload.checkpoint_id);
+      if (!Number.isFinite(cp)) return;
+      const ids = routeReturnMedFrom(cp);
+      console.log(`[Stack] return_request checkpoint_id=${cp} → return_route`, ids);
+      publishCarryStackJson({ action: 'return_route', ids });
+      if (_emitRobotPosition) {
+        _emitRobotPosition({
+          robotId,
+          status: 'busy',
+          currentNodeId: checkpointIdToName(cp) || String(cp),
+          ts,
+          stackEvent: { evt: 'return_request', checkpoint_id: cp },
+          stackLogLine: `[return_request] ${checkpointIdToName(cp) || cp} → MED`,
+        });
+      }
+      return;
+    }
+
+    const evt = payload.evt;
+    let currentNodeId = null;
+    let cpRaw = null;
+    let batteryLevel = null;
+    let status = null;            // null = don't change status
+    let stackLogLine = '';
+
+    if (evt === 'checkpoint' && typeof payload.id === 'number') {
+      cpRaw = payload.id;
+      lastStackCpByRobot.set(robotId, cpRaw);
+      currentNodeId = checkpointIdToName(cpRaw) || `CP${cpRaw}`;
+      status = 'busy';
+      stackLogLine = `checkpoint → ${currentNodeId} (${cpRaw})`;
+    } else if (evt === 'idle_scan' && typeof payload.id === 'number') {
+      cpRaw = payload.id;
+      lastStackCpByRobot.set(robotId, cpRaw);
+      currentNodeId = checkpointIdToName(cpRaw) || `CP${cpRaw}`;
+      status = 'idle';
+      stackLogLine = `idle scan → ${currentNodeId} (${cpRaw})`;
+    } else if (evt === 'mission_done') {
+      status = 'idle';
+      stackLogLine = 'mission_done';
+    } else if (evt === 'battery' && typeof payload.pct === 'number') {
+      batteryLevel = payload.pct;
+      stackLogLine = `battery ${batteryLevel}%`;
+    } else if (evt === 'cancelled') {
+      status = 'idle';
+      stackLogLine = 'cancelled';
+    } else if (evt === 'route_accept') {
+      status = 'busy';
+      stackLogLine = `route_accept n=${payload.n}`;
+    } else if (evt === 'route_pending') {
+      status = 'busy';
+      stackLogLine = `route_pending n=${payload.n}`;
+    } else if (evt === 'line_lost') {
+      stackLogLine = 'line_lost';
+    } else if (evt === 'obstacle') {
+      stackLogLine = 'obstacle (ToF)';
+    } else if (evt === 'cp_mismatch') {
+      stackLogLine = `cp_mismatch recv=${payload.recv ?? payload.received} exp=${payload.exp ?? payload.expected}`;
+    } else if (evt === 'recovery_nfc') {
+      currentNodeId = checkpointIdToName(payload.id) || `CP${payload.id}`;
+      stackLogLine = `recovery_nfc ${currentNodeId}`;
+    } else if (evt === 'relay_ack') {
+      stackLogLine = `relay ${payload.which} → ${payload.on ? 'ON' : 'OFF'}`;
+    } else if (evt === 'relay_resume') {
+      stackLogLine = 'relay: auto (theo chế độ robot)';
+    } else {
+      stackLogLine = evt ? String(evt) : JSON.stringify(payload).slice(0, 120);
+    }
+
+    const lastCp = lastStackCpByRobot.get(robotId);
+    const nodeForUi = currentNodeId ?? (lastCp != null ? (checkpointIdToName(lastCp) || `CP${lastCp}`) : null);
+
+    if (_emitRobotPosition) {
+      const sseData = {
+        robotId,
+        status,
+        batteryLevel: batteryLevel ?? undefined,
+        currentNodeId: nodeForUi,
+        ts,
+        stackEvent: payload,
+        stackLogLine,
+        cpRawId: cpRaw ?? undefined,
+      };
+      // Forward debug telemetry for test lab dashboard
+      if (payload.debug && typeof payload.debug === 'object') {
+        sseData.debug = payload.debug;
+      }
+      _emitRobotPosition(sseData);
+    }
+
+    const update = {
+      robotId,
+      type: 'carry',
+      name: 'Carry Stack',
+      lastSeenAt: new Date(ts),
+    };
+    if (status != null) update.status = status === 'idle' ? 'idle' : 'busy';
+    if (batteryLevel != null) update.batteryLevel = batteryLevel;
+    if (nodeForUi) update.currentLocation = { room: nodeForUi };
+
+    await Robot.updateOne({ robotId }, { $set: update }, { upsert: true });
+  } catch (e) {
+    console.error('[MQTT] carry stack parse:', e.message);
+  }
+}
+
+export function publishCarryStackJson(obj) {
+  if (!connected || !client) {
+    console.error('[MQTT] Not connected - cannot publish carry stack');
+    return false;
+  }
+  const payload = JSON.stringify(obj);
+  client.publish(STACK_CMD_TOPIC, payload, { qos: 1 }, (err) => {
+    if (err) console.error('[MQTT] carry stack publish:', err.message);
+    else console.log(`[MQTT] carry stack → ${STACK_CMD_TOPIC}`, payload);
+  });
+  return true;
+}
+
 async function handleMessage(topic, message) {
   try {
+    if (topic === STACK_EVT_TOPIC || topic === STACK_RETURN_TOPIC) {
+      await handleCarryStackTopic(topic, message);
+      return;
+    }
+
     const payload = JSON.parse(message.toString());
 
     const topicParts = topic.split('/');
@@ -114,6 +273,8 @@ async function handleMessage(topic, message) {
       await handleReturned(robotId, payload);
     } else if (topic.includes('/position/waiting_return')) {
       await handleWaitingReturnRoute(robotId, payload);
+    } else if (topic.includes('/alert')) {
+      await handleRobotAlert(robotId, payload);
     }
   } catch (err) {
     console.error('[MQTT] Message parse error:', err.message);
@@ -175,7 +336,7 @@ async function handleTelemetry(robotId, payload) {
       }
     }
 
-    if (batteryLevel <= 20) status = 'low_battery';
+    if (batteryLevel < LOW_BATTERY_PCT) status = 'low_battery';
 
     const update = {
       robotId,
@@ -216,6 +377,23 @@ async function handleTelemetry(robotId, payload) {
       { $set: update },
       { upsert: true, new: true }
     );
+
+    // Push live position to all SSE clients
+    if (_emitRobotPosition) {
+      const evt = {
+        robotId,
+        status,
+        batteryLevel,
+        batteryMv: payload.batteryMv ?? null,
+        currentNodeId: telemetryNodeId || null,
+        destBed: payload.destBed || null,
+        ts: Date.now(),
+      };
+      if (payload.debug && typeof payload.debug === 'object') {
+        evt.debug = payload.debug;
+      }
+      _emitRobotPosition(evt);
+    }
 
     console.log(`[MQTT] Telemetry updated for ${robotId}: status=${status}, battery=${batteryLevel}%`);
   } catch (err) {
@@ -288,7 +466,7 @@ async function handleComplete(robotId, payload) {
 
     await Robot.findOneAndUpdate(
       { robotId },
-      { $set: { status: 'idle', currentMissionId: null, lastSeen: new Date() } }
+      { $set: { status: 'idle', currentMissionId: null, lastSeenAt: new Date() } }
     );
 
     console.log(`[MQTT] Mission ${missionId} completed by ${robotId}`);
@@ -319,8 +497,8 @@ async function handleReturned(robotId, payload) {
         $set: {
           status: 'idle',
           currentMissionId: null,
-          currentLocation: 'MED',
-          lastSeen: new Date()
+          'currentLocation.room': 'MED',
+          lastSeenAt: new Date()
         }
       }
     );
@@ -328,6 +506,62 @@ async function handleReturned(robotId, payload) {
     console.log(`[MQTT] Robot ${robotId} returned for mission ${missionId}`);
   } catch (err) {
     console.error('[MQTT] Returned handler error:', err.message);
+  }
+}
+
+// Map firmware alertType strings → Alert model type values
+const ALERT_TYPE_MAP = {
+  battery_warning:               'battery_warning',
+  battery_critical:              'battery_critical',
+  mission_rejected_low_battery:  'mission_rejected_low_battery',
+};
+
+async function handleRobotAlert(robotId, payload) {
+  try {
+    const { alertType, message, batteryMv, batteryLevel } = payload;
+    if (!alertType || !message) {
+      console.warn(`[MQTT] Alert from ${robotId} missing alertType/message`);
+      return;
+    }
+
+    const dbType = ALERT_TYPE_MAP[alertType] || 'info';
+
+    const level =
+      alertType === 'battery_critical'             ? 'high'   :
+      alertType === 'battery_warning'              ? 'medium' :
+      alertType === 'mission_rejected_low_battery' ? 'medium' : 'low';
+
+    await Alert.create({
+      type: dbType,
+      level,
+      robotId,
+      message,
+      data: { alertType, batteryMv: batteryMv ?? null, batteryLevel: batteryLevel ?? null },
+    });
+
+    // Keep robot batteryLevel in sync when a battery alert arrives
+    if (typeof batteryLevel === 'number' && Number.isFinite(batteryLevel)) {
+      const update = { batteryLevel: Math.max(0, Math.min(100, batteryLevel)) };
+      // Mark robot as low_battery on the dashboard when battery is below mission threshold
+      if (batteryLevel < LOW_BATTERY_PCT) update.status = 'low_battery';
+      await Robot.findOneAndUpdate({ robotId }, { $set: update });
+    }
+
+    // Push alert to SSE clients so the dashboard can react immediately
+    if (_emitRobotPosition) {
+      _emitRobotPosition({
+        robotId,
+        alertType,
+        message,
+        batteryLevel: batteryLevel ?? null,
+        batteryMv:    batteryMv    ?? null,
+        ts: Date.now(),
+      });
+    }
+
+    console.log(`[MQTT] Alert from ${robotId}: [${level}] ${alertType} – ${message}`);
+  } catch (err) {
+    console.error('[MQTT] handleRobotAlert error:', err.message);
   }
 }
 
@@ -347,13 +581,11 @@ function getCardinalDirection(fromCoords, toCoords) {
 
 function getRelativeTurn(heading, required) {
   const diff = ((required - heading) + 4) % 4;
-  switch (diff) {
-    case 0: return 'F';
-    case 1: return 'R';
-    case 2: return 'B';
-    case 3: return 'L';
-    default: return 'F';
-  }
+  // diff is always 0–3 after the modulo — no default needed
+  if (diff === 1) return 'R';
+  if (diff === 2) return 'B';
+  if (diff === 3) return 'L';
+  return 'F';
 }
 
 async function handleWaitingReturnRoute(robotId, payload) {
@@ -370,7 +602,7 @@ async function handleWaitingReturnRoute(robotId, payload) {
 
     console.log(`[MQTT] Robot ${robotId} waiting at ${currentNodeId} (prev: ${previousNodeId || 'none'}, mission: ${effectiveMissionId})`);
 
-    let mapId = 'floor1';
+    let mapId = DEFAULT_MAP_ID;
     if (!isRecovery) {
       const mission = await TransportMission.findOne({ missionId: effectiveMissionId }).lean();
       if (mission) {
@@ -440,6 +672,7 @@ async function calculateReturnRouteFromNode(mapId, fromNodeId, previousNodeId = 
     computeReturnActions(routePoints, fromNodeId);
 
     if (previousNodeId && routePoints.length >= 2) {
+      // Two-checkpoint vector: use prevNode→curNode heading for precise firstAction
       const prevNode = nodes.get(previousNodeId);
       const curNode  = nodes.get(fromNodeId);
 
@@ -459,8 +692,17 @@ async function calculateReturnRouteFromNode(mapId, fromNodeId, previousNodeId = 
           `next=${routePoints[1].nodeId} required=${CARDINAL_NAME[required]}, firstAction=${firstAction}`
         );
       } else {
-        console.warn(`[MQTT] Vector2Pts: Missing coordinates for ${previousNodeId} or ${fromNodeId}, using geometry-only actions`);
+        // Coordinates missing – fall through to the safe default below
+        console.warn(`[MQTT] Vector2Pts: Missing coordinates for ${previousNodeId} or ${fromNodeId}, defaulting firstAction=B`);
+        routePoints[0].action  = 'B';
+        routePoints[0].actions = ['B', 'F'];
       }
+    } else if (routePoints.length >= 2) {
+      // No previousNodeId supplied: robot was on an outbound run (heading away
+      // from MED), so it always needs a U-turn before following the return path.
+      routePoints[0].action  = 'B';
+      routePoints[0].actions = ['B', 'F'];
+      console.log(`[MQTT] No previousNodeId at ${fromNodeId} – defaulting firstAction=B (outbound U-turn)`);
     }
 
     return routePoints;
@@ -665,12 +907,3 @@ export function getClient() {
   return client;
 }
 
-export default {
-  initMqtt,
-  publishMissionAssign,
-  publishMissionCancel,
-  publishReturnRoute,
-  publishCommand,
-  isConnected,
-  getClient,
-};

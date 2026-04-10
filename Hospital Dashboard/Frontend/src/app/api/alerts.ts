@@ -1,8 +1,15 @@
 import { API_ENDPOINTS } from './config';
 import { get, post, put } from './http';
 
-export type AlertLevel = 'info' | 'warning' | 'error' | 'critical';
-export type AlertType = 'robot_error' | 'mission_failed' | 'low_battery' | 'connection_lost' | 'system' | 'custom';
+export type AlertLevel = 'low' | 'medium' | 'high';
+export type AlertType =
+  | 'carry_low_battery'
+  | 'battery_warning'
+  | 'battery_critical'
+  | 'mission_rejected_low_battery'
+  | 'rescue_required'
+  | 'route_deviation'
+  | 'info';
 
 export interface Alert {
   _id: string;

@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { Users, Bot, Hospital, RefreshCw, Bell, AlertCircle } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Users, Bot, Hospital, RefreshCw, Bell, X, CheckCheck, FlaskConical } from 'lucide-react';
 import { Button } from '@/app/components/ui/button';
 import { PatientDashboard } from '@/app/components/PatientDashboard';
 import { RobotCenter } from '@/app/components/RobotCenter';
+import { RobotTestLab } from '@/app/components/RobotTestLab';
 import { PatientDetails } from '@/app/components/PatientDetails';
 import { ConnectionStatus } from '@/app/components/ConnectionStatus';
 import { RFIDProvider } from '@/app/contexts/RFIDContext';
@@ -12,7 +13,7 @@ import { useRobots } from '@/app/hooks/useRobots';
 import { useAlerts } from '@/app/hooks/useAlerts';
 import { useMissions } from '@/app/hooks/useMissions';
 
-type Module = 'patients' | 'robot';
+type Module = 'patients' | 'robot' | 'lab';
 
 export default function App() {
   const [currentModule, setCurrentModule] = useState<Module>('patients');
@@ -21,7 +22,6 @@ export default function App() {
   const {
     patients,
     loading: patientsLoading,
-    error: patientsError,
     addPatient,
     updatePatient,
     deletePatient,
@@ -31,8 +31,6 @@ export default function App() {
   const {
     robots,
     loading: robotsLoading,
-    error: robotsError,
-    cancelTask,
     refresh: refreshRobots
   } = useRobots(5000);
 
@@ -42,6 +40,19 @@ export default function App() {
     resolveAlert,
     refresh: refreshAlerts
   } = useAlerts(10000);
+
+  const [alertPanelOpen, setAlertPanelOpen] = useState(false);
+  const alertPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (alertPanelRef.current && !alertPanelRef.current.contains(e.target as Node)) {
+        setAlertPanelOpen(false);
+      }
+    };
+    if (alertPanelOpen) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [alertPanelOpen]);
 
   const {
     createDeliveryMission,
@@ -138,7 +149,6 @@ export default function App() {
   };
 
   const isLoading = patientsLoading || robotsLoading;
-  const hasError = patientsError || robotsError;
 
   return (
     <RFIDProvider>
@@ -162,15 +172,73 @@ export default function App() {
               {}
               <ConnectionStatus />
 
-              {}
-              {alertCounts.total > 0 && (
-                <div className="flex items-center gap-2 bg-red-100 px-4 py-2 rounded-full">
-                  <Bell className="w-5 h-5 text-red-600" />
-                  <span className="text-base font-medium text-red-600">
-                    {alertCounts.total} Alert{alertCounts.total > 1 ? 's' : ''}
+              {/* Alert bell */}
+              <div className="relative" ref={alertPanelRef}>
+                <button
+                  onClick={() => setAlertPanelOpen(p => !p)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full transition-colors ${
+                    alertCounts.total > 0
+                      ? 'bg-red-100 hover:bg-red-200 text-red-600'
+                      : 'bg-gray-100 hover:bg-gray-200 text-gray-500'
+                  }`}
+                >
+                  <Bell className="w-5 h-5" />
+                  <span className="text-base font-medium">
+                    {alertCounts.total > 0
+                      ? `${alertCounts.total} Alert${alertCounts.total > 1 ? 's' : ''}`
+                      : 'No Alerts'}
                   </span>
-                </div>
-              )}
+                </button>
+
+                {alertPanelOpen && (
+                  <div className="absolute right-0 top-12 w-96 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+                    <div className="flex items-center justify-between px-4 py-3 border-b bg-gray-50">
+                      <span className="font-semibold text-gray-700">Active Alerts</span>
+                      {alertCounts.total > 0 && (
+                        <button
+                          onClick={async () => {
+                            await Promise.all(alerts.map(a => resolveAlert(a._id)));
+                          }}
+                          className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+                          title="Dismiss all"
+                        >
+                          <CheckCheck className="w-4 h-4" />
+                          Dismiss all
+                        </button>
+                      )}
+                    </div>
+
+                    {alerts.length === 0 ? (
+                      <p className="px-4 py-6 text-center text-sm text-gray-400">No active alerts</p>
+                    ) : (
+                      <ul className="max-h-80 overflow-y-auto divide-y">
+                        {alerts.map(a => (
+                          <li key={a._id} className="flex items-start gap-3 px-4 py-3 hover:bg-gray-50">
+                            <span className={`mt-0.5 w-2 h-2 rounded-full flex-shrink-0 ${
+                              a.level === 'high' ? 'bg-red-500' :
+                              a.level === 'medium' ? 'bg-yellow-400' : 'bg-blue-400'
+                            }`} />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-gray-800 break-words">{a.message}</p>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {a.type}{a.robotId ? ` · ${a.robotId}` : ''}
+                                {' · '}{new Date(a.createdAt).toLocaleString()}
+                              </p>
+                            </div>
+                            <button
+                              onClick={() => resolveAlert(a._id)}
+                              className="text-gray-400 hover:text-red-500 flex-shrink-0"
+                              title="Dismiss"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
 
               {}
               <Button
@@ -210,6 +278,15 @@ export default function App() {
                 <Bot className="w-5 h-5 mr-2" />
                 Robot Center
               </Button>
+              <Button
+                variant={currentModule === 'lab' ? 'default' : 'ghost'}
+                onClick={() => setCurrentModule('lab')}
+                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary text-base py-3 px-6"
+                data-active={currentModule === 'lab'}
+              >
+                <FlaskConical className="w-5 h-5 mr-2" />
+                Robot test lab
+              </Button>
             </div>
           </div>
         </nav>
@@ -224,7 +301,7 @@ export default function App() {
             onUpdatePatient={handleUpdatePatient}
             onDeletePatient={handleDeletePatient}
           />
-        ) : (
+        ) : currentModule === 'robot' ? (
           <RobotCenter
             patients={patients}
             robots={robots}
@@ -232,6 +309,8 @@ export default function App() {
             onCancelTask={handleCancelRobotTask}
             onSendRobot={handleSendRobot}
           />
+        ) : (
+          <RobotTestLab />
         )}
       </main>
 

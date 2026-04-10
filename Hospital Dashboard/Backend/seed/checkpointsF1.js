@@ -1,3 +1,8 @@
+/**
+ * RFID UID strings (4 bytes) for map nodes. Keep in sync with firmware:
+ * CarryRobot/esp32_stm32_stack/esp32_master/src/checkpoint_map.cpp
+ * CarryRobot/esp32_stm32_stack/stm32_slave/src/checkpoint_map.cpp
+ */
 export const CHECKPOINT_UID = {
   R1M1: "35:FD:E1:83",
   R1M2: "45:AB:49:83",

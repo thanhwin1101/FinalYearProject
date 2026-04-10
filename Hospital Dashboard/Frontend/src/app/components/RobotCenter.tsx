@@ -22,31 +22,24 @@ export function RobotCenter({ patients, robots, onBedClick, onCancelTask, onSend
 
   const fetchActiveMissions = useCallback(async () => {
     try {
-
-      const missions = await getMissions({ status: 'pending,en_route,arrived' });
+      const missions = await getMissions({ status: 'pending,en_route,arrived' } as Parameters<typeof getMissions>[0]);
       if (missions.length > 0) {
-        const mission = missions[0];
-
+        const mission = missions[0] as TransportMission & { bedId: string };
         const patient = patients.find(p => p.roomBedId === mission.bedId);
         if (patient) {
-          setActiveMission({
-            patientId: patient.id,
-            robotId: mission.carryRobotId,
-            missionId: mission.missionId
-          });
+          setActiveMission({ patientId: patient.id, robotId: mission.carryRobotId, missionId: mission.missionId });
         }
       } else {
         setActiveMission(null);
       }
-    } catch (error) {
-      console.error('Failed to fetch active missions:', error);
+    } catch (err) {
+      console.error('Failed to fetch active missions:', err);
     }
   }, [patients]);
 
   useEffect(() => {
     const fetchHistory = async () => {
       try {
-
         const deliveryRes = await getDeliveryHistory({ limit: 50 });
         setDeliveryHistory(deliveryRes.history.map(item => ({
           id: item._id,
@@ -57,43 +50,28 @@ export function RobotCenter({ patients, robots, onBedClick, onCancelTask, onSend
           patientName: item.patientName,
           destination: item.destinationRoom,
           duration: item.duration,
-          status: item.status as 'completed' | 'failed' | 'cancelled'
+          status: item.status as 'completed' | 'failed' | 'cancelled',
         })));
-
         await fetchActiveMissions();
-      } catch (error) {
-        console.error('Failed to fetch history:', error);
+      } catch (err) {
+        console.error('Failed to fetch history:', err);
       }
     };
 
     fetchHistory();
-
     const interval = setInterval(fetchHistory, 5000);
     return () => clearInterval(interval);
   }, [fetchActiveMissions]);
 
   const handleBedClick = (bedId: string, patient?: Patient) => {
-    if (selectedBedId === bedId) {
-
-      setSelectedBedId(null);
-      setSelectedPatient(undefined);
-    } else {
-      setSelectedBedId(bedId);
-      setSelectedPatient(patient);
-    }
+    setSelectedBedId(selectedBedId === bedId ? null : bedId);
+    setSelectedPatient(selectedBedId === bedId ? undefined : patient);
     onBedClick?.(bedId, patient);
   };
 
   const handleSendRobot = async (patientId: string) => {
     const result = await onSendRobot?.(patientId);
-    if (result) {
-
-      setActiveMission({
-        patientId,
-        robotId: result.robotId,
-        missionId: result.missionId
-      });
-    }
+    if (result) setActiveMission({ patientId, robotId: result.robotId, missionId: result.missionId });
   };
 
   const handleCancelTask = (missionId: string) => {
@@ -102,28 +80,29 @@ export function RobotCenter({ patients, robots, onBedClick, onCancelTask, onSend
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-      {}
-      <div className="bg-white p-6 rounded-lg shadow-sm border">
-        <h2 className="text-xl font-semibold mb-4 text-gray-900">Hospital Floor Map</h2>
-        <BedMap
-          patients={patients}
-          robots={robots}
-          onBedClick={handleBedClick}
-          selectedBedId={selectedBedId}
-        />
-      </div>
-
-      {}
-      <div className="bg-white p-6 rounded-lg shadow-sm border">
-        <RobotManagement
-          robots={robots}
-          selectedPatient={selectedPatient}
-          onSendRobot={handleSendRobot}
-          onCancelTask={handleCancelTask}
-          activeMission={activeMission}
-          deliveryHistory={deliveryHistory}
-        />
+    <div className="space-y-4">
+      <div className="bg-white rounded-xl border shadow-sm p-4">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div>
+            <h2 className="text-lg font-semibold mb-3 text-gray-900">Hospital Floor Map</h2>
+            <BedMap
+              patients={patients}
+              robots={robots}
+              onBedClick={handleBedClick}
+              selectedBedId={selectedBedId}
+            />
+          </div>
+          <div>
+            <RobotManagement
+              robots={robots}
+              selectedPatient={selectedPatient}
+              onSendRobot={handleSendRobot}
+              onCancelTask={handleCancelTask}
+              activeMission={activeMission}
+              deliveryHistory={deliveryHistory}
+            />
+          </div>
+        </div>
       </div>
     </div>
   );

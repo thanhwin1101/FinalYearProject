@@ -9,8 +9,12 @@ const robotSchema = new mongoose.Schema({
   status: {
     type: String,
     default: 'idle',
-    enum: ['idle', 'busy', 'charging', 'maintenance', 'offline', 'low_battery']
+    enum: ['idle', 'busy', 'charging', 'maintenance', 'offline', 'low_battery',
+           'follow', 'manual', 'waiting']
   },
+
+  robotMode: { type: String, enum: ['auto', 'follow'], default: 'auto' },
+  currentMissionId: { type: String, default: null },
 
   lastSeenAt: { type: Date, default: null },
 

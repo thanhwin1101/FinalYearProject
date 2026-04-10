@@ -1,0 +1,138 @@
+[Vào Auto Mode]
+    |
+    v
+[Tắt R1 (nếu đang bật), Bật R2 và R3 (cấp nguồn line sensor + PN532)]
+Chờ 200ms
+    |
+    v
+[Khởi tạo cảm biến Auto: line sensor (3 chân), PN532 (SPI)]
+Gửi lệnh UART 0x01 (mode AUTO) cho STM32
+    |
+    v
+[OLED hiển thị màn hình Auto IDLE (chờ route)]
+    |
+    v
+[Chờ lệnh MQTT từ backend hoặc nút nhấn bắt đầu]
+    |
+    +-- Nhận route mới (MQTT) --> [Lưu route vào bộ nhớ (danh sách checkpoint, tên bệnh nhân, đích)]
+    |                               |
+    |                               v
+    |                         [OLED hiển thị thông tin route: Patient, Destination, tổng số CP]
+    |                               |
+    |                               v
+    |                         [Chờ nút nhấn (single click) để bắt đầu]
+    |                               |
+    |                               v
+    |                         [Gửi route xuống STM32 qua UART (CMD 0x02)]
+    |                               |
+    |                               v
+    |                         [STM32 bắt đầu điều khiển xe theo route]
+    |                         (line sensor, PN532, ToF được STM32 xử lý)
+    |                               |
+    |                               v
+    |                         [Vòng lặp trong khi route chưa kết thúc]
+    |                               |
+    |                         +-- Nhận được checkpoint từ STM32 (CMD 0x82)
+    |                         |       |
+    |                         |       v
+    |                         |   [Gửi checkpoint ID lên backend qua MQTT]
+    |                         |       |
+    |                         |       v
+    |                         |   [Cập nhật OLED: CP hiện tại / tổng số]
+    |                         |       |
+    |                         |       v
+    |                         |   [Nếu checkpoint cuối cùng] --> [Chuyển sang bước "Kết thúc route"]
+    |                         |
+    |                         +-- Nhận lệnh hủy từ backend (MQTT)
+    |                         |       |
+    |                         |       v
+    |                         |   [Gửi CMD 0x05 (Cancel) cho STM32]
+    |                         |       |
+    |                         |       v
+    |                         |   [Thực hiện "Return to Base" (xem mục riêng)]
+    |                         |       |
+    |                         |       v
+    |                         |   [Thoát Auto, quay lại IDLE hoặc chuyển mode?]
+    |                         |
+    |                         +-- Nhận route mới từ backend trong khi đang chạy
+    |                         |       |
+    |                         |       v
+    |                         |   [Gửi CMD 0x05 (Cancel) cho STM32]
+    |                         |       |
+    |                         |       v
+    |                         |   [Xóa route cũ, lưu route mới, quay lại bước "Chờ nút nhấn"]
+    |                         |
+    |                         +-- STM32 báo lỗi ToF (<20cm) (CMD 0x83)
+    |                                 |
+    |                                 v
+    |                             [STM32 tự động dừng xe, chờ vật cản biến mất]
+    |                             (ESP32 chỉ nhận cảnh báo, không can thiệp)
+    |                             Khi hết cản, STM32 tự tiếp tục.
+    |
+    +-- [Kết thúc route] (STM32 gửi CMD 0x85)
+            |
+            v
+        [OLED thông báo "Route completed"]
+            |
+            v
+        [STM32 tự quay 180° (theo lệnh từ ESP32? Hoặc STM32 tự làm)]
+        (Theo thiết kế: ESP32 gửi CMD 0x06 để xác nhận hoàn thành, STM32 quay 180°)
+            |
+            v
+        [Chờ nút nhấn (single click) để bắt đầu route quay về MED]
+            |
+            v
+        [ESP32 gửi yêu cầu route về MED lên backend (MQTT)]
+        (gửi checkpoint hiện tại – là MED nếu đã quay 180°? Thực tế cần lấy checkpoint sau khi quay)
+            |
+            v
+        [Nhận route về từ backend, lưu vào bộ nhớ]
+            |
+            v
+        [Quay lại bước "Gửi route xuống STM32" và chạy route mới]
+
+
+
+Return to Base (khi bị hủy giữa chừng)
+text
+[Hủy nhiệm vụ (bằng lệnh MQTT hoặc nút nhấn? Chỉ backend mới hủy)]
+    |
+    v
+[ESP32 gửi CMD 0x05 cho STM32] --> [STM32 dừng xe ngay lập tức]
+    |
+    v
+[ESP32 yêu cầu STM32 đọc checkpoint hiện tại qua PN532]
+(Có thể gửi CMD 0x04 Request Status, hoặc STM32 tự gửi CMD 0x82 khi dừng)
+    |
+    v
+[ESP32 nhận checkpoint ID (ví dụ CP_03)]
+    |
+    v
+[ESP32 publish MQTT topic "robot/return_request" với checkpoint ID]
+    |
+    v
+[Chờ backend trả về route (danh sách checkpoint) về MED]
+    |
+    v
+[Nhận route, lưu vào bộ nhớ]
+    |
+    v
+[Gửi route xuống STM32 (CMD 0x02)]
+    |
+    v
+[STM32 bắt đầu chạy route quay về]
+    |
+    v
+[Trong khi chạy, mỗi checkpoint đến, STM32 gửi ID lên ESP32]
+    |
+    v
+[Nếu ID nhận được KHÔNG khớp với ID mong đợi trong route]
+    |
+    +--> [ESP32 gửi CMD 0x06 Confirm Arrival? Không, cần xử lý mismatch]
+    |       |
+    |       v
+    |   [STM32 tự phanh, quay 180°, sau đó yêu cầu lại route từ checkpoint hiện tại]
+    |   (hoặc ESP32 gửi yêu cầu route mới lên backend)
+    |
+    v
+[Khi về đến MED (checkpoint cuối), OLED thông báo, chuyển về IDLE Auto]
