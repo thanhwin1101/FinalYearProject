@@ -27,6 +27,8 @@ function carryRobotToFrontend(robot: CarryRobotStatus): Robot {
     destination: robot.destination || '',
     currentNode: robot.currentNode || '',
     status: mapStatus(robot.status),
+    backendStatus: robot.status,
+    isOnline: robot.isOnline ?? true,
     taskDescription: robot.carrying !== '—' ? `Carrying: ${robot.carrying}` : undefined,
     batteryLevel: robot.batteryLevel || 0,
     lastUpdated: new Date().toISOString(),

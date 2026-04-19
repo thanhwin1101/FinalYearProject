@@ -32,7 +32,7 @@ const TOPICS = {
 const STACK_CMD_TOPIC = process.env.MQTT_STACK_CMD_TOPIC || 'carry/robot/cmd';
 const STACK_EVT_TOPIC = process.env.MQTT_STACK_EVT_TOPIC || 'carry/robot/evt';
 const STACK_RETURN_TOPIC = process.env.MQTT_STACK_RETURN_TOPIC || 'robot/return_request';
-export const STACK_ROBOT_ID = process.env.MQTT_STACK_ROBOT_ID || 'carry-stack-1';
+export const STACK_ROBOT_ID = process.env.MQTT_STACK_ROBOT_ID || 'AGV-01';
 
 const lastStackCpByRobot = new Map();
 
@@ -173,6 +173,16 @@ async function handleCarryStackTopic(topic, message) {
     } else if (evt === 'battery' && typeof payload.pct === 'number') {
       batteryLevel = payload.pct;
       stackLogLine = `battery ${batteryLevel}%`;
+    } else if (evt === 'telemetry' && payload.debug) {
+      const d = payload.debug;
+      if (typeof d.battEsp === 'number') batteryLevel = d.battEsp;
+      // Extract idle/busy from run flag + mode
+      if (d.mode === 'auto') {
+        status = d.run ? 'busy' : 'idle';
+      } else if (d.mode === 'follow' || d.mode === 'recovery') {
+        status = 'busy';
+      }
+      stackLogLine = `telemetry mode=${d.mode} run=${d.run} batt=${d.battEsp}%`;
     } else if (evt === 'cancelled') {
       status = 'idle';
       stackLogLine = 'cancelled';
@@ -223,7 +233,7 @@ async function handleCarryStackTopic(topic, message) {
     const update = {
       robotId,
       type: 'carry',
-      name: 'Carry Stack',
+      name: robotId,
       lastSeenAt: new Date(ts),
     };
     if (status != null) update.status = status === 'idle' ? 'idle' : 'busy';
@@ -836,18 +846,17 @@ export function publishMissionAssign(robotId, mission) {
     return false;
   }
 
-  const topic = `hospital/robots/${robotId}/mission/assign`;
-  const payload = JSON.stringify({
-    mission: {
-      missionId: mission.missionId,
-      status: mission.status,
-      patientName: mission.patientName,
-      bedId: mission.bedId,
-      outboundRoute: mission.outboundRoute,
-      returnRoute: mission.returnRoute,
-    }
-  });
+  const missionObj = {
+    missionId: mission.missionId,
+    status: mission.status,
+    patientName: mission.patientName,
+    bedId: mission.bedId,
+    outboundRoute: mission.outboundRoute,
+    returnRoute: mission.returnRoute,
+  };
+  const payload = JSON.stringify({ mission: missionObj });
 
+  const topic = `hospital/robots/${robotId}/mission/assign`;
   client.publish(topic, payload, { qos: 1, retain: false }, (err) => {
     if (err) {
       console.error(`[MQTT] Publish error to ${topic}:`, err.message);
@@ -855,6 +864,17 @@ export function publishMissionAssign(robotId, mission) {
       console.log(`[MQTT] Mission ${mission.missionId} assigned to ${robotId}`);
     }
   });
+
+  // Bridge to carry stack ESP32 — it subscribes to STACK_CMD_TOPIC, not the new topic
+  if (robotId === STACK_ROBOT_ID) {
+    client.publish(STACK_CMD_TOPIC, payload, { qos: 1, retain: false }, (err) => {
+      if (err) {
+        console.error(`[MQTT] Carry stack bridge publish error:`, err.message);
+      } else {
+        console.log(`[MQTT] Mission ${mission.missionId} bridged → ${STACK_CMD_TOPIC}`);
+      }
+    });
+  }
 
   return true;
 }
@@ -875,6 +895,15 @@ export function publishMissionCancel(robotId, missionId) {
       console.log(`[MQTT] Cancel sent for mission ${missionId} to ${robotId}`);
     }
   });
+
+  // Bridge to carry stack ESP32 — subscribes to STACK_CMD_TOPIC only
+  if (robotId === STACK_ROBOT_ID) {
+    const stackPayload = JSON.stringify({ action: 'cancel' });
+    client.publish(STACK_CMD_TOPIC, stackPayload, { qos: 1, retain: false }, (err) => {
+      if (err) console.error('[MQTT] Cancel bridge error:', err.message);
+      else console.log(`[MQTT] Cancel bridged → ${STACK_CMD_TOPIC}`);
+    });
+  }
 
   return true;
 }

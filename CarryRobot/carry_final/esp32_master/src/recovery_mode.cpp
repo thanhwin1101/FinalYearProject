@@ -3,177 +3,85 @@
 #include "config.h"
 #include "relay_control.h"
 #include "uart_protocol.h"
-#include "huskylens_uart.h"
 #include "servo_control.h"
 #include "oled_display.h"
 #include "mqtt_client.h"
-#include "buzzer.h"
 
 extern HardwareSerial Serial2;
 
-// ── recovery phases ─────────────────────────────────────────────────
-enum RecPhase : uint8_t {
-    REC_INIT,
-    REC_FIND_LINE,
-    REC_ALIGN_LINE,
-    REC_READ_CHECKPOINT,
-    REC_WAIT_ROUTE,
-    REC_DONE
-};
+// Recovery: robot lost person during follow mode.
+// Same algorithm as cancel: keep following line blindly until a checkpoint is
+// scanned, then use that position to request the return route from the backend.
+// NO button can exit recovery — only the backend return route can.
 
-static RecPhase phase = REC_INIT;
-static int      sweepAngle = 0;
-static int      sweepDir   = 1;
-static uint8_t  sweepRetry = 0;
-static uint32_t lastMs     = 0;
-static uint32_t cpTimeout  = 0;
-static uint32_t routeTimeout = 0;
-
-// ── send velocity ───────────────────────────────────────────────────
-static void sendVel(int16_t vx, int16_t vy, int16_t vr) {
-    uint8_t buf[6];
-    buf[0] = (vx >> 8); buf[1] = vx;
-    buf[2] = (vy >> 8); buf[3] = vy;
-    buf[4] = (vr >> 8); buf[5] = vr;
-    uartSendFrame(Serial2, CMD_DIRECT_VEL, buf, 6);
-}
-static void stopSTM32() { sendVel(0, 0, 0); }
-
-// ──────────────────────────────────────────────────────────────────
 void recoveryModeInit() {
-    stopSTM32();
-    relaySetRecovery();
-    huskyReconnect();   // re-init after relay vision powered on
+    // Switch relays: vision off, LINE+NFC on (needed for NFC navigation)
+    if (!relayGetLineNfc()) {
+        relaySetAuto();      // vision off, line+nfc on (5s relay delay)
+    } else {
+        relayVisionOff();    // line already on, just kill vision
+    }
 
-    servoSetY(100);
-    servoSetX(SERVO_X_CENTER);
-    huskySetLineMode();
+    // Switch STM32 from FOLLOW → AUTO so autoRunnerLoop() processes the cancel.
+    // CMD_CANCEL_MISSION is only picked up in autoRunnerLoop() which requires MODE_AUTO.
+    uint8_t m = MODE_AUTO;
+    uartSendFrame(Serial2, CMD_SET_MODE, &m, 1);
 
-    phase      = REC_FIND_LINE;
-    sweepAngle = 0;
-    sweepDir   = 1;
-    sweepRetry = 0;
-    lastMs     = millis();
+    // Tell STM32 to enter blind-follow-to-CP mode (processed by autoRunnerLoop)
+    uartSendFrame(Serial2, CMD_CANCEL_MISSION, nullptr, 0);
+    servoSetY(SERVO_Y_LEVEL);
 
-    oledRecovery("Finding line...");
-    Serial.println("[RECOVERY] init – finding line");
+    // g_newCheckpoint will be set when STM32 finds a checkpoint.
+    // recoveryModeLoop() watches for it and fires the return request.
+    g_newCheckpoint = false;
+
+    oledRecovery(1);   // step 1: relay switch
+    Serial.println("[RECOVERY] init → blind follow to checkpoint");
 }
 
 void recoveryModeLoop() {
     if (g_mode != MODE_RECOVERY) return;
+
+    static uint32_t lastOled    = 0;
+    static bool     routeAsked  = false;
     uint32_t now = millis();
 
-    switch (phase) {
-
-    // ── Phase 1: sweep servo X to find line via HuskyLens ───────────
-    case REC_FIND_LINE:
-        if (now - lastMs >= 50) {
-            lastMs = now;
-            sweepAngle += sweepDir;          // 1°/50ms
-            if (sweepAngle > 180) { sweepAngle = 180; sweepDir = -1; }
-            if (sweepAngle < 0) {
-                // full sweep done (0→180→0), no line found
-                sweepRetry++;
-                buzzerBeepN(3);
-                Serial.printf("[RECOVERY] sweep fail #%u\n", sweepRetry);
-                if (sweepRetry >= 3) {
-                    oledError("No line found!");
-                    Serial.println("[RECOVERY] 3 sweep fails – staying");
-                    // stay in phase, keep trying but slower
-                }
-                sweepAngle = 0; sweepDir = 1;
-            }
-            servoSetX(sweepAngle);
-
-            HuskyResult r = huskyRead();
-            if (r.detected) {
-                Serial.printf("[RECOVERY] line at servo X=%d\n", sweepAngle);
-                phase = REC_ALIGN_LINE;
-            }
-        }
-        oledRecovery("Scanning for line...");
-        break;
-
-    // ── Phase 2: drive robot so line sensor center picks up line ────
-    case REC_ALIGN_LINE: {
-        HuskyResult r = huskyRead();
-        if (r.detected) {
-            // steer toward line: x offset → rotation
-            float errX = (float)(r.xCenter - 160);
-            int16_t vr = (int16_t)(errX * 0.3f);
-            sendVel(0, 80, vr);     // crawl forward while aligning
-        } else {
-            stopSTM32();
+    // Phase 1: waiting for STM32 to report a checkpoint
+    if (!routeAsked) {
+        if (now - lastOled > OLED_UPDATE_MS) {
+            lastOled = now;
+            oledRecovery(2);   // step 2: finding CP
         }
 
-        // ask STM32 for line sensor status via status request
-        // when STM32 reports NFC checkpoint, we know we're on track
         if (g_newCheckpoint) {
             g_newCheckpoint = false;
-            stopSTM32();
-            Serial.printf("[RECOVERY] on line, CP=%u\n", g_lastCheckpointId);
-            phase = REC_READ_CHECKPOINT;
-        }
-
-        oledRecovery("Aligning to line...");
-    } break;
-
-    // ── Phase 3: read NFC checkpoint ────────────────────────────────
-    case REC_READ_CHECKPOINT:
-        // we already have a checkpoint from align phase
-        if (g_lastCheckpointId != 0) {
+            routeAsked = true;
+            oledRecovery(3, g_lastCheckpointId);   // step 3: CP found
+            delay(400);                             // brief flash so user can read CP
             mqttPublishReturnRequest(g_lastCheckpointId);
-            routeTimeout = now;
-            phase = REC_WAIT_ROUTE;
-            oledRecovery("Requesting route...");
-            Serial.printf("[RECOVERY] requesting return from CP %u\n", g_lastCheckpointId);
-        } else {
-            // wait for STM32 to read NFC
-            cpTimeout = now;
-            oledRecovery("Reading NFC...");
-            if (g_newCheckpoint) {
-                g_newCheckpoint = false;
-                mqttPublishReturnRequest(g_lastCheckpointId);
-                routeTimeout = now;
-                phase = REC_WAIT_ROUTE;
-            }
-            if (now - cpTimeout > 30000) {
-                buzzerBeepN(5);
-                oledError("NFC timeout!");
-                // stay in recovery, keep trying
-                cpTimeout = now;
-            }
+            oledRecovery(4, g_lastCheckpointId);   // step 4: calling MED
+            Serial.printf("[RECOVERY] CP=0x%04X → return_request\n", g_lastCheckpointId);
         }
-        break;
+        return;
+    }
 
-    // ── Phase 4: wait for return route from backend ─────────────────
-    case REC_WAIT_ROUTE:
-        oledRecovery("Waiting for route...");
-        // MQTT callback will set g_autoState = AUTO_RETURNING when route arrives
-        if (g_autoState == AUTO_RETURNING) {
-            phase = REC_DONE;
-        }
-        if (now - routeTimeout > 15000) {
-            // retry
-            mqttPublishReturnRequest(g_lastCheckpointId);
-            routeTimeout = now;
-            Serial.println("[RECOVERY] route timeout, retrying");
-        }
-        break;
+    // Phase 2: route requested, waiting for backend to reply
+    if (now - lastOled > OLED_UPDATE_MS) {
+        lastOled = now;
+        oledRecovery(5, g_lastCheckpointId);   // step 5: waiting route
+    }
 
-    // ── Phase 5: switch to Auto mode to execute return route ────────
-    case REC_DONE:
-        relaySetAuto();
-        servoSetX(SERVO_X_CENTER);
-        servoSetY(SERVO_Y_LEVEL);
-        g_mode = MODE_AUTO;
-        // g_autoState already set to AUTO_RETURNING by MQTT callback
-        Serial.println("[RECOVERY] → AUTO (returning)");
-        buzzerBeep(100);
-        break;
+    // Re-request every 5 s in case MQTT packet was missed
+    static uint32_t lastRequest = 0;
+    if (now - lastRequest > 5000) {
+        lastRequest = now;
+        mqttPublishReturnRequest(g_lastCheckpointId);
+        Serial.printf("[RECOVERY] re-request CP=%u\n", g_lastCheckpointId);
+    }
 
-    default:
-        phase = REC_FIND_LINE;
-        break;
+    // MQTT return_route callback calls autoModeActivateReturn() → g_mode = MODE_AUTO
+    // Reset routeAsked for next recovery entry
+    if (g_mode != MODE_RECOVERY) {
+        routeAsked = false;
     }
 }

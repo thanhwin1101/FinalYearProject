@@ -15,18 +15,16 @@
 #include "battery.h"
 #include "button_handler.h"
 #include "oled_display.h"
-#include "huskylens_uart.h"
 #include "servo_control.h"
-#include "sr05.h"
 #include "mqtt_client.h"
 #include "auto_mode.h"
 #include "follow_mode.h"
-#include "find_mode.h"
 #include "recovery_mode.h"
+#include "ota_manager.h"
 
 // ── Hardware serial ports ───────────────────────────────────────────
 // STM32: dùng Serial2 toàn project (auto/follow/find/recovery) — tránh hai đối tượng UART2.
-HardwareSerial SerialHusky(1);     // UART1  → HuskyLens
+// HuskyLens: đã chuyển xuống STM32 (USART3) — ESP32 không còn kết nối trực tiếp.
 
 // ── WiFiManager: MQTT-only portal (keep WiFi, re-enter MQTT IP) ─────
 static void startMqttPortal() {
@@ -159,44 +157,75 @@ static void handleSTM32() {
             mqttPublishEvent("line_lost");
             break;
 
+        case CMD_HUSKY_STATUS:
+            if (len >= 11) {
+                g_huskyDetected = buf[0] != 0;
+                g_huskyXCenter  = (int16_t)(((uint16_t)buf[1] << 8) | buf[2]);
+                g_huskyYCenter  = (int16_t)(((uint16_t)buf[3] << 8) | buf[4]);
+                g_huskyWidth    = (int16_t)(((uint16_t)buf[5] << 8) | buf[6]);
+                g_huskyHeight   = (int16_t)(((uint16_t)buf[7] << 8) | buf[8]);
+                g_huskyId       = (int16_t)(((uint16_t)buf[9] << 8) | buf[10]);
+                g_huskyNew = true;
+            }
+            break;
+
+        case CMD_TAG_LOST:
+            g_stm32TagLost = true;
+            Serial.println("[UART] <<< TAG_LOST");
+            break;
+
+        case CMD_TAG_FOUND:
+            g_stm32TagFound = true;
+            Serial.println("[UART] <<< TAG_FOUND");
+            break;
+
+        case CMD_LINE_STATUS:
+            if (len >= 1) g_stm32LineBits = buf[0];
+            break;
+            break;
+
         default:
             Serial.printf("[UART] unknown cmd 0x%02X\n", cmd);
         }
     }
 }
 
-// ── Mode switching (double click at MED + IDLE) ─────────────────────
+// ── Mode switching (long press: toggle AUTO ↔ FOLLOW) ─────────────
 static void checkModeSwitch() {
-    if (!g_btnDoubleClick) return;
+    if (!g_btnLongPress) return;
 
-    if (g_mode == MODE_AUTO && g_autoState == AUTO_IDLE
-        && g_lastCheckpointId == MED_CHECKPOINT_ID) {
-        // Auto → Follow (only when at MED and IDLE)
-        g_btnDoubleClick = false;
+    if (g_mode == MODE_AUTO && g_autoState == AUTO_IDLE) {
+        g_btnLongPress = false;
         g_mode = MODE_FOLLOW;
         followModeInit();
-        Serial.println("[MODE] AUTO → FOLLOW (at MED)");
-    } else if (g_mode == MODE_AUTO && g_autoState == AUTO_IDLE) {
-        g_btnDoubleClick = false;
-        buzzerBeepN(2);  // reject: not at MED
-        Serial.println("[MODE] switch rejected – not at MED");
+        buzzerBeep(150);
+        Serial.printf("[MODE] AUTO → FOLLOW (last CP=0x%04X)\n", g_lastCheckpointId);
+    } else if (g_mode == MODE_FOLLOW) {
+        g_btnLongPress = false;
+        g_mode = MODE_AUTO;
+        autoModeInit();
+        buzzerBeep(150);
+        Serial.println("[MODE] FOLLOW → AUTO");
+    } else {
+        // not switchable (mission running, recovery…) → just consume + beep
+        g_btnLongPress = false;
+        buzzerBeep(60);
     }
-    // Follow/Find → Recovery is handled inside their own loops
 }
 
 // ── Periodic tasks ──────────────────────────────────────────────────
 // static uint32_t lastBatt = 0;   // tạm tắt battery
 static uint32_t lastTelem = 0;
+static uint32_t lastBatt  = 0;
 static uint32_t lastDebug = 0;
 
 static void periodicTasks() {
     uint32_t now = millis();
 
-    // tạm tắt battery read
-    // if (now - lastBatt >= BATTERY_READ_MS) {
-    //     lastBatt = now;
-    //     batteryRead();
-    // }
+    if (now - lastBatt >= 5000UL) {   // đọc pin mỗi 5 giây
+        lastBatt = now;
+        batteryRead();
+    }
 
     if (now - lastTelem >= TELEMETRY_MS) {
         lastTelem = now;
@@ -232,14 +261,13 @@ void setup() {
     oledSplash();
     relayInit();
     relayLineNfcOn();   // power PN532 + line sensors early so STM32 nfcInit() succeeds
+    delay(5000);        // chờ phần cứng (PN532, line sensor) ổn định trước khi STM32 khởi tạo
     buzzerInit();
-    // batteryInit();      // tạm tắt battery
-    g_batteryPercent = 100;
+    batteryInit();
     buttonInit();
 
     // UARTs
     Serial2.begin(STM32_BAUD, SERIAL_8N1, PIN_STM32_RX, PIN_STM32_TX);
-    SerialHusky.begin(HUSKY_BAUD, SERIAL_8N1, PIN_HUSKY_RX, PIN_HUSKY_TX);
 
     // WiFi — autoConnect (dùng creds đã lưu, hoặc mở portal nếu chưa có)
     oledBoot(false, false);
@@ -267,10 +295,11 @@ void setup() {
     }
     oledBoot(true, mqttIsConnected());
 
+    // OTA — must be called after WiFi is connected
+    otaInit();
+
     // Sensors & default mode
     servoInit();
-    sr05Init();
-    huskyInit(SerialHusky);
 
     // default: Auto mode (only enter idle when both WiFi and MQTT are connected)
     autoModeInit();
@@ -285,18 +314,11 @@ void loop() {
     // always run
     buttonLoop();
     mqttLoop();
+    otaLoop();
     handleSTM32();
     periodicTasks();
 
-    // long press → force WiFi + MQTT portal
-    if (g_btnLongPress) {
-        g_btnLongPress = false;
-        Serial.println("[BTN] long press → force WiFi portal");
-        buzzerBeep(300);
-        startPortal(true);   // restarts after save
-    }
-
-    // mode switch check
+    // long press → toggle mode (AUTO ↔ FOLLOW)
     checkModeSwitch();
 
     // ── MQTT requested mode change → call proper init here (safe stack) ──
@@ -305,24 +327,18 @@ void loop() {
         switch (g_mode) {
         case MODE_AUTO:     autoModeInit();     break;
         case MODE_FOLLOW:   followModeInit();   break;
-        case MODE_FIND:     relaySetFollow();   break;   // find dùng relay giống follow
         case MODE_RECOVERY: recoveryModeInit(); break;
         }
-        Serial.printf("[MODE] init after MQTT set_mode → %u\n", g_mode);
+        Serial.printf("[MODE] init after mode change → %u\n", g_mode);
     }
 
     // mode-specific loop
     switch (g_mode) {
     case MODE_AUTO:     autoModeLoop();     break;
     case MODE_FOLLOW:   followModeLoop();   break;
-    case MODE_FIND:     findModeLoop();     break;
     case MODE_RECOVERY:
-        {
-            static bool recInited = false;
-            if (!recInited) { recoveryModeInit(); recInited = true; }
-            recoveryModeLoop();
-            if (g_mode != MODE_RECOVERY) recInited = false;
-        }
+        // recoveryModeInit() is called once via g_modeChangeReq above; never call it again here.
+        recoveryModeLoop();
         break;
     }
 }

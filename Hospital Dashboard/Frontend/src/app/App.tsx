@@ -162,8 +162,7 @@ export default function App() {
               <div className="flex items-center gap-4">
                 <Hospital className="w-10 h-10 text-white" />
                 <div>
-                  <h1 className="text-3xl font-bold text-black">Hospital Management System</h1>
-                  <p className="text-base text-black opacity-80">Patient Care & Robot Navigation</p>
+                  <h1 className="text-3xl font-bold text-black">AGV_Hospital</h1>
                 </div>
               </div>
 
@@ -326,7 +325,7 @@ export default function App() {
       <footer className="bg-white border-t py-4">
         <div className="w-full px-6">
           <p className="text-center text-base text-gray-600">
-            Hospital Patient Management System • Integrated with Robot Navigation • Secure RFID Access Control
+            AGV_Hospital
           </p>
         </div>
       </footer>

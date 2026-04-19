@@ -33,6 +33,9 @@ static void sendModeAuto() {
     uartSendFrame(Serial2, CMD_SET_MODE, &m, 1);
 }
 
+// File-scope so autoModeActivateReturn() can reset it across calls
+static bool s_returnSent = false;
+
 // ──────────────────────────────────────────────────────────────────
 void autoModeInit() {
     buzzerOff();            // silence any active tone
@@ -41,10 +44,19 @@ void autoModeInit() {
     g_autoState = AUTO_IDLE;
     g_routeLen  = 0;
     g_routeIdx  = 0;
-    servoSetX(SERVO_X_CENTER);  // 100
     servoSetY(SERVO_Y_LEVEL);   // 100
     oledIdle();
     Serial.println("[AUTO] init");
+}
+
+// Called by MQTT return_route handler (from any mode) to arm the return run.
+// Resets s_returnSent so AUTO_RETURNING will push the route to STM32.
+void autoModeActivateReturn() {
+    s_returnSent = false;
+    g_autoState  = AUTO_RETURNING;
+    g_routeIdx   = 0;
+    oledAutoReturning(0, g_routeLen);
+    Serial.println("[AUTO] activateReturn");
 }
 
 void autoModeLoop() {
@@ -85,12 +97,15 @@ void autoModeLoop() {
         }
         if (g_btnSingleClick) {
             g_btnSingleClick = false;
-            // tạm tắt kiểm tra pin
-            // if (!batteryOk()) {
-            //     oledBatteryLow(g_batteryPercent);
-            //     buzzerBeepN(3);
-            //     break;
-            // }
+            if (g_batteryPercent <= BATT_MIN_PERCENT) {
+                oledBatteryLow(g_batteryPercent);
+                buzzerBeepN(3, 200, 100);
+                g_autoState = AUTO_IDLE;
+                g_routeLen  = 0;
+                Serial.printf("[AUTO] battery low (%u%%) → reject start, back to IDLE\n",
+                              g_batteryPercent);
+                break;
+            }
             sendRouteToSTM32();
             g_autoState = AUTO_RUNNING;
             g_routeIdx  = 0;
@@ -107,7 +122,7 @@ void autoModeLoop() {
             // STM32 will read NFC and report checkpoint after cancel
             // wait briefly for checkpoint report, then request return route
             g_autoState = AUTO_WAIT_RETURN_ROUTE;
-            oledRecovery("Cancelled - waiting...");
+            oledAutoCancel();
             Serial.println("[AUTO] MQTT cancel → CMD 0x05, waiting for CP");
             break;
         }
@@ -144,7 +159,14 @@ void autoModeLoop() {
             buzzerBeepN(2, 120, 80);
             Serial.println("[AUTO] arrived at destination");
         }
-        break;
+        // checkpoint mismatch → request corrected route from backend
+        if (g_stm32MismatchFlag) {
+            g_stm32MismatchFlag = false;
+            mqttPublishReturnRequest(g_stm32MismatchGot);
+            g_autoState = AUTO_WAIT_RETURN_ROUTE;
+            oledAutoMismatch();
+            Serial.printf("[AUTO] mismatch got=%u → reroute\n", g_stm32MismatchGot);
+        }        break;
 
     // ── AT DESTINATION: wait button to request return ───────────────
     case AUTO_WAIT_RETURN_BTN:
@@ -162,7 +184,7 @@ void autoModeLoop() {
     // ── WAIT RETURN ROUTE: waiting for backend to send return route ─
     case AUTO_WAIT_RETURN_ROUTE:
         if (now - lastOled > OLED_UPDATE_MS) {
-            oledRecovery("Waiting return route");
+            oledRecovery(5);   // "Waiting return route"
             lastOled = now;
         }
         // checkpoint from STM32 after cancel → publish return request
@@ -176,52 +198,57 @@ void autoModeLoop() {
 
     // ── RETURNING: running return route ─────────────────────────────
     case AUTO_RETURNING:
-        // new return route just arrived → send to STM32
-        {
-            static bool returnSent = false;
-            if (!returnSent) {
-                sendRouteToSTM32();
-                g_routeIdx = 0;
-                returnSent = true;
-            }
+        // Send route to STM32 exactly once per return trip
+        if (!s_returnSent) {
+            sendRouteToSTM32();
+            g_routeIdx   = 0;
+            s_returnSent = true;
+        }
 
-            if (g_newCheckpoint) {
-                g_newCheckpoint = false;
-                g_routeIdx++;
-                mqttPublishCheckpoint(g_lastCheckpointId);
-            }
+        if (g_newCheckpoint) {
+            g_newCheckpoint = false;
+            g_routeIdx++;
+            mqttPublishCheckpoint(g_lastCheckpointId);
+        }
 
-            if (now - lastOled > OLED_UPDATE_MS) {
-                oledAutoReturning(g_routeIdx, g_routeLen);
-                lastOled = now;
-            }
+        if (now - lastOled > OLED_UPDATE_MS) {
+            oledAutoReturning(g_routeIdx, g_routeLen);
+            lastOled = now;
+        }
 
-            if (g_stm32MissionDone) {
-                g_stm32MissionDone = false;
-                g_autoState = AUTO_COMPLETE;
-                returnSent = false;
-            }
+        if (g_stm32MissionDone) {
+            g_stm32MissionDone = false;
+            g_autoState  = AUTO_COMPLETE;
+            s_returnSent = false;
+        }
 
-            // mismatch handling
-            if (g_stm32MismatchFlag) {
-                g_stm32MismatchFlag = false;
-                Serial.printf("[AUTO] mismatch! got=%u exp=%u\n",
-                              g_stm32MismatchGot, g_stm32MismatchExp);
-                // request new return route from current position
-                mqttPublishReturnRequest(g_stm32MismatchGot);
-                returnSent = false;
-            }
+        // mismatch handling
+        if (g_stm32MismatchFlag) {
+            g_stm32MismatchFlag = false;
+            Serial.printf("[AUTO] mismatch! got=%u exp=%u\n",
+                          g_stm32MismatchGot, g_stm32MismatchExp);
+            mqttPublishReturnRequest(g_stm32MismatchGot);
+            s_returnSent = false;
         }
         break;
 
     // ── COMPLETE: back at MED ───────────────────────────────────────
-    case AUTO_COMPLETE:
-        mqttPublishMissionDone(g_missionId, true);
-        buzzerBeepN(3, 80, 60);
-        g_autoState = AUTO_IDLE;
-        g_routeLen  = 0;
-        oledIdle();
-        Serial.println("[AUTO] mission complete, back to IDLE");
+    case AUTO_COMPLETE: {
+        static uint32_t s_doneAt = 0;
+        if (s_doneAt == 0) {
+            s_doneAt = now;
+            mqttPublishMissionDone(g_missionId, true);
+            buzzerBeepN(3, 80, 60);
+            oledMissionDone();
+            Serial.println("[AUTO] mission complete → back to IDLE in 2.5s");
+        }
+        if (now - s_doneAt >= 2500UL) {
+            s_doneAt    = 0;
+            g_autoState = AUTO_IDLE;
+            g_routeLen  = 0;
+            oledIdle();
+        }
         break;
+    }
     }
 }

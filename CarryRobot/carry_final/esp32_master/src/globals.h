@@ -6,8 +6,7 @@
 enum RobotMode : uint8_t {
     MODE_AUTO     = 0,
     MODE_FOLLOW   = 1,
-    MODE_FIND     = 2,   // sub-mode of Follow
-    MODE_RECOVERY = 3
+    MODE_RECOVERY = 2
 };
 
 // ── Auto sub-states ─────────────────────────────────────────────────
@@ -58,6 +57,17 @@ extern volatile bool     g_stm32MismatchFlag;
 // button events
 extern volatile bool     g_btnSingleClick;
 extern volatile bool     g_btnDoubleClick;
+
+// HuskyLens data from STM32
+extern volatile bool     g_huskyNew;
+extern volatile bool     g_huskyDetected;
+extern volatile int16_t  g_huskyXCenter;
+extern volatile int16_t  g_huskyYCenter;
+extern volatile int16_t  g_huskyWidth;
+extern volatile int16_t  g_huskyHeight;
+extern volatile int16_t  g_huskyId;
+extern volatile bool     g_stm32TagLost;
+extern volatile bool     g_stm32TagFound;
 extern volatile bool     g_btnLongPress;
 
 /** Đặt bởi MQTT topic cancel — auto_mode xử lý CMD 0x05 + return request. */
@@ -66,8 +76,15 @@ extern volatile bool     g_mqttCancel;
 // ── Test lab tunables (set via MQTT from dashboard) ─────────────────
 extern volatile uint16_t g_tuneSpinMs;     // turn spin duration ms
 extern volatile uint16_t g_tuneBrakeMs;    // turn brake duration ms
-extern volatile uint16_t g_tuneWallCm;     // SR05 wall threshold cm
+extern volatile uint16_t g_tuneWallCm;     // wall threshold cm (legacy tune param)
 extern volatile bool     g_testDashboard;  // OLED test dashboard mode
 extern volatile bool     g_running;        // robot is actively executing
 extern volatile bool     g_stopped;        // emergency stop flag
 extern volatile bool     g_modeChangeReq;  // MQTT requested mode change → main loop handles init
+
+// Line sensor bits received from STM32 (bit0=L, bit1=C, bit2=R)
+extern volatile uint8_t  g_stm32LineBits;
+
+// Tunable speeds forwarded to STM32 via CMD_TUNE_SPEED
+extern volatile uint8_t  g_tuneRunSpeed;   // straight driving speed
+extern volatile uint8_t  g_tuneTurnSpeed;  // turn speed

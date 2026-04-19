@@ -4,6 +4,13 @@ import fs from 'fs/promises';
 import path from 'path';
 import Patient from '../models/Patient.js';
 import MapGraph from '../models/MapGraph.js';
+import {
+  normalizeBedToCanonical,
+  canonicalToLegacy,
+  getBedAliases,
+  parseBedForSort,
+  fallbackBedIds,
+} from '../utils/bedUtils.js';
 
 const r = Router();
 
@@ -72,76 +79,6 @@ function parseDateOnly(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : '';
 }
 
-function parseBedKeyAny(bedId='') {
-  const canonical = String(bedId).match(/^R(\d+)([MO])(\d+)$/i);
-  if (canonical) {
-    return { room: Number(canonical[1]), bed: Number(canonical[3]) };
-  }
-  const legacy = String(bedId).match(/^R(\d+)-Bed(\d+)$/i);
-  if (legacy) {
-    return { room: Number(legacy[1]), bed: Number(legacy[2]) };
-  }
-  return { room: 9999, bed: 9999 };
-}
-
-function canonicalToLegacy(canonicalId) {
-  const m = String(canonicalId).match(/^R(\d+)([MO])(\d+)$/i);
-  if (!m) return null;
-  const room = Number(m[1]);
-  const side = m[2].toUpperCase();
-  const idx = Number(m[3]);
-  const bedMap = { M1: 1, O1: 2, M2: 3, O2: 4, M3: 5, O3: 6 };
-  const bedNum = bedMap[`${side}${idx}`];
-  if (!bedNum) return null;
-  return `R${room}-Bed${bedNum}`;
-}
-
-function getBedsAliases(bedId) {
-  const aliases = [String(bedId).toUpperCase()];
-  const canonical = String(bedId).match(/^R(\d+)([MO])(\d+)$/i);
-  const legacy = String(bedId).match(/^R(\d+)-Bed(\d+)$/i);
-
-  if (canonical) {
-    const leg = canonicalToLegacy(bedId);
-    if (leg) aliases.push(leg.toUpperCase());
-  } else if (legacy) {
-    const room = legacy[1];
-    const bed = Number(legacy[2]);
-    const bedMap = { 1: 'M1', 2: 'O1', 3: 'M2', 4: 'O2', 5: 'M3', 6: 'O3' };
-    const can = `R${room}${bedMap[bed]}`;
-    if (can) aliases.push(can.toUpperCase());
-  }
-
-  return aliases;
-}
-
-function normalizeBedToCanonical(bedId) {
-  const canonical = String(bedId).match(/^R(\d+)([MO])(\d+)$/i);
-  const legacy = String(bedId).match(/^R(\d+)-Bed(\d+)$/i);
-
-  if (canonical) {
-    return `R${canonical[1]}${canonical[2].toUpperCase()}${canonical[3]}`;
-  }
-
-  if (legacy) {
-    const room = legacy[1];
-    const bed = Number(legacy[2]);
-    const bedMap = { 1: 'M1', 2: 'O1', 3: 'M2', 4: 'O2', 5: 'M3', 6: 'O3' };
-    const can = `R${room}${bedMap[bed]}`;
-    return can || null;
-  }
-
-  return null;
-}
-
-function fallbackBedIds() {
-  const out = [];
-  const bedMap = { 1: 'M1', 2: 'O1', 3: 'M2', 4: 'O2', 5: 'M3', 6: 'O3' };
-  for (let r = 1; r <= 4; r++) {
-    for (let b = 1; b <= 6; b++) out.push(`R${r}${bedMap[b]}`);
-  }
-  return out;
-}
 
 async function getValidBedIds(mapId='F1') {
   const map = await MapGraph.findOne({ mapId: String(mapId) }).lean().catch(()=>null);
@@ -152,8 +89,8 @@ async function getValidBedIds(mapId='F1') {
   const list = beds.length ? beds : fallbackBedIds();
 
   list.sort((a,b) => {
-    const A = parseBedKeyAny(a);
-    const B = parseBedKeyAny(b);
+    const A = parseBedForSort(a);
+    const B = parseBedForSort(b);
     if (A.room !== B.room) return A.room - B.room;
     return A.bed - B.bed;
   });
@@ -163,7 +100,7 @@ async function getValidBedIds(mapId='F1') {
 
 async function isValidBed(bedId) {
   const validBeds = await getValidBedIds('F1');
-  const aliases = getBedsAliases(bedId);
+  const aliases = getBedAliases(bedId);
   return validBeds.some(b => aliases.includes(b.toUpperCase()));
 }
 
@@ -200,7 +137,7 @@ r.get('/by-bed/:bedId', async (req, res) => {
     const bedId = String(req.params.bedId || '').trim();
     if (!bedId) return res.status(400).json({ message: 'bedId required' });
 
-    const aliases = getBedsAliases(bedId);
+    const aliases = getBedAliases(bedId);
     const p = await Patient.findOne(
       { roomBed: { $in: aliases }, status: { $not: /^discharged$/i } },
       null,
@@ -259,8 +196,8 @@ r.get('/', async (req, res) => {
       list.sort((a,b) => new Date(a.admissionDate || 0) - new Date(b.admissionDate || 0));
     } else {
       list.sort((a,b) => {
-        const A = parseBedKeyAny(a.roomBed || '');
-        const B = parseBedKeyAny(b.roomBed || '');
+        const A = parseBedForSort(a.roomBed || '');
+        const B = parseBedForSort(b.roomBed || '');
         if (A.room !== B.room) return A.room - B.room;
         return A.bed - B.bed;
       });
@@ -319,7 +256,7 @@ r.post('/', upload.single('photo'), async (req, res) => {
     }
 
     if (String(doc.status).toLowerCase() !== 'discharged') {
-      const aliases = getBedsAliases(doc.roomBed);
+      const aliases = getBedAliases(doc.roomBed);
       const occupied = await Patient.findOne(
         { roomBed: { $in: aliases }, status: { $not: /^discharged$/i } },
         null,
@@ -384,7 +321,7 @@ r.put('/:id', upload.single('photo'), async (req, res) => {
 
       const nextStatus = body.status ? String(body.status).trim() : patient.status;
       if (String(nextStatus).toLowerCase() !== 'discharged') {
-        const aliases = getBedsAliases(canonical);
+        const aliases = getBedAliases(canonical);
         const occupied = await Patient.findOne(
           {
             _id: { $ne: patient._id },

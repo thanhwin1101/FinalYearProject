@@ -8,6 +8,7 @@ import Alert from '../models/Alert.js';
 
 import { publishMissionAssign, publishMissionCancel } from '../services/mqttService.js';
 import { LOW_BATTERY_PCT, ROBOT_ONLINE_TIMEOUT_MS } from '../utils/constants.js';
+import { normalizeBedToCanonical, parseBedId } from '../utils/bedUtils.js';
 
 const router = express.Router();
 
@@ -39,38 +40,6 @@ function pickStartNodeId(map) {
   return nodes[0]?.nodeId || null;
 }
 
-function normalizeBedId(bedId) {
-  const s = String(bedId || '').trim();
-  let m = /^R(\d+)([MO])(\d+)$/i.exec(s);
-  if (m) {
-    const room = Number(m[1]);
-    const side = m[2].toUpperCase();
-    const idx = Number(m[3]);
-    if (room >= 1 && room <= 4 && idx >= 1 && idx <= 3) return `R${room}${side}${idx}`;
-    return s.toUpperCase();
-  }
-  m = /^R(\d+)-Bed(\d+)$/i.exec(s);
-  if (m) {
-    const room = Number(m[1]);
-    const bed = Number(m[2]);
-    if (!(room >= 1 && room <= 4) || !(bed >= 1 && bed <= 6)) return null;
-
-    const idx = Math.ceil(bed / 2);
-    const side = (bed % 2 === 1) ? 'M' : 'O';
-    return `R${room}${side}${idx}`;
-  }
-  return s.toUpperCase();
-}
-
-function parseBedId(normalBedId) {
-  const m = /^R(\d)([MO])(\d)$/.exec(String(normalBedId || ''));
-  if (!m) return null;
-  const room = Number(m[1]);
-  const side = m[2];
-  const idx = Number(m[3]);
-  if (room < 1 || room > 4 || idx < 1 || idx > 3) return null;
-  return { room, side, idx };
-}
 
 function pickDestinationNodeId(map, bedId) {
   const nodes = map.nodes || [];
@@ -315,7 +284,7 @@ router.post('/delivery', async (req, res) => {
 
     if (!carry) return res.status(409).send('No idle ONLINE carry robot available');
 
-    const normalBedId = normalizeBedId(bedId);
+    const normalBedId = normalizeBedToCanonical(bedId);
     if (!normalBedId) return res.status(400).send('Invalid bedId');
 
     const startNodeId = pickStartNodeId(map);

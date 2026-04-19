@@ -126,9 +126,8 @@ router.get('/carry/status', async (_req, res) => {
     const now = Date.now();
 
     const all = await Robot.find({ type: 'carry' }).lean();
-    const online = all.filter(r => r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ROBOT_ONLINE_TIMEOUT_MS));
 
-    const robotIds = online.map(r => r.robotId);
+    const robotIds = all.map(r => r.robotId);
     const activeMissions = await TransportMission.find({
       carryRobotId: { $in: robotIds },
       returnedAt: null,
@@ -139,23 +138,25 @@ router.get('/carry/status', async (_req, res) => {
       missionMap[m.carryRobotId] = m;
     }
 
-    const robots = online.map(r => {
+    const robots = all.map(r => {
+      const isOnline = !!(r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ROBOT_ONLINE_TIMEOUT_MS));
       const mission = missionMap[r.robotId];
 
       const location = r.currentLocation?.room ||
         (typeof r.currentLocation === 'string' ? r.currentLocation : '—');
 
-      const destination = mission
+      const destination = (mission && ['pending', 'en_route', 'arrived', 'completed'].includes(mission.status))
         ? (mission.bedId || mission.destinationNodeId || '—')
-        : (r.transportData?.destination?.room || '—');
+        : '—';
 
       const currentNode = mission?.currentNodeId || '';
 
       return {
         robotId: r.robotId,
         name: r.name,
-        status: r.status,
-        statusText: r.status,
+        status: isOnline ? r.status : 'offline',
+        statusText: isOnline ? r.status : 'offline',
+        isOnline,
         batteryLevel: r.batteryLevel ?? 0,
         carrying: r.transportData?.carryingItem || '—',
         destination,
@@ -165,11 +166,13 @@ router.get('/carry/status', async (_req, res) => {
       };
     });
 
+    const online = robots.filter(x => x.isOnline);
     const summary = {
       total: robots.length,
-      idle: robots.filter(x => x.status === 'idle').length,
-      busy: robots.filter(x => x.status === 'busy').length,
-      charging: robots.filter(x => x.status === 'charging').length,
+      online: online.length,
+      idle: online.filter(x => x.status === 'idle').length,
+      busy: online.filter(x => x.status === 'busy').length,
+      charging: online.filter(x => x.status === 'charging').length,
     };
 
     res.json({ summary, robots });
@@ -271,6 +274,13 @@ router.post('/:id/command', async (req, res) => {
       'resume',
       'tune_turn',
       'test_dashboard',
+      'direct_vel',
+      'servo_set',
+      'servo_center',
+      'servo_sweep',
+      'radar_scan',
+      'wheel_set',
+      'radar_speed',
     ];
     if (!ALLOWED_COMMANDS.includes(command)) {
       return res.status(400).json({ error: `Unknown command: ${command}` });

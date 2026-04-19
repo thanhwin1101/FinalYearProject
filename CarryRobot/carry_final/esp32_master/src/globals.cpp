@@ -27,6 +27,17 @@ volatile bool     g_btnSingleClick = false;
 volatile bool     g_btnDoubleClick = false;
 volatile bool     g_btnLongPress   = false;
 
+// HuskyLens data from STM32
+volatile bool     g_huskyNew       = false;
+volatile bool     g_huskyDetected  = false;
+volatile int16_t  g_huskyXCenter   = 0;
+volatile int16_t  g_huskyYCenter   = 0;
+volatile int16_t  g_huskyWidth     = 0;
+volatile int16_t  g_huskyHeight    = 0;
+volatile int16_t  g_huskyId        = 0;
+volatile bool     g_stm32TagLost   = false;
+volatile bool     g_stm32TagFound  = false;
+
 volatile bool     g_mqttCancel     = false;
 
 volatile uint16_t g_tuneSpinMs    = 974;   // default from config
@@ -36,3 +47,8 @@ volatile bool     g_testDashboard = false;
 volatile bool     g_running       = false;
 volatile bool     g_stopped       = false;
 volatile bool     g_modeChangeReq = false;
+
+volatile uint8_t  g_stm32LineBits = 0;
+
+volatile uint8_t  g_tuneRunSpeed  = 190;
+volatile uint8_t  g_tuneTurnSpeed = 175;

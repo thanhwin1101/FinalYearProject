@@ -9,6 +9,8 @@ export interface Robot {
   destination: string;
   currentNode?: string;
   status: RobotStatus;
+  backendStatus: string;   // raw status from backend: idle/busy/offline/follow/...
+  isOnline: boolean;
   assignedPatientId?: string;
   taskDescription?: string;
   batteryLevel: number;

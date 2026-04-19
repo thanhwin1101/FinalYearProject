@@ -2,10 +2,7 @@
 #include <Arduino.h>
 #include "config.h"
 
+// Servo Y angle tracked on ESP32 and sent to STM32 via CMD_SERVO_SET (0x07).
 void  servoInit();
-void  servoSetX(int angle);
 void  servoSetY(int angle);
-int   servoGetX();
 int   servoGetY();
-int   servoReadXFeedback();   // raw ADC feedback for servo X
-float servoReadXAngle();      // estimated angle from feedback

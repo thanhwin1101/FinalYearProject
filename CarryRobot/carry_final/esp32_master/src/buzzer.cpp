@@ -9,6 +9,10 @@ void buzzerInit() {
     ledcWrite(BUZZER_CHANNEL, 0);
 }
 
+void buzzerOn() {
+    ledcWriteTone(BUZZER_CHANNEL, BUZZER_FREQ);
+}
+
 void buzzerBeep(uint16_t ms) {
     ledcWriteTone(BUZZER_CHANNEL, BUZZER_FREQ);
     delay(ms);

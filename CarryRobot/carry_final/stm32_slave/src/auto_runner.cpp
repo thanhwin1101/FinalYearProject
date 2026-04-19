@@ -12,6 +12,9 @@ extern HardwareSerial Serial2;   // UART to ESP32
 
 // ── line-lost threshold (~50 × 2ms main loop = ~100ms) ─────────────
 #define LINE_LOST_THRESHOLD  50
+#define LINE_CREEP_TRIGGER   20      // consecutive lost reads before creeping (~40ms @ 2ms loop)
+#define CREEP_SPEED          60      // forward PWM while creeping to reach NFC tag
+#define CREEP_TIMEOUT_MS     2500    // max creep duration before reporting line lost
 static bool     s_lineLostSent = false;
 static uint32_t s_lastLineLostLog = 0;
 
@@ -32,12 +35,15 @@ enum RunState : uint8_t {
     RUN_LINE_FOLLOW,
     RUN_TURNING,
     RUN_OBSTACLE,
+    RUN_CREEP_TO_CP,
+    RUN_CANCEL_FIND_CP,   // keep following line after cancel until next checkpoint
     RUN_DONE
 };
 
 static RunState  runState = RUN_IDLE;
 static uint32_t  turnEnd  = 0;
 static bool      obstacleReported = false;
+static uint32_t  s_creepStart     = 0;
 
 // ── report checkpoint to ESP32 ──────────────────────────────────────
 static void reportCheckpoint(uint16_t id) {
@@ -91,7 +97,7 @@ static void lineFollowStep() {
     correction = constrain(correction, -LF_MAX_CORR, LF_MAX_CORR);
 
     int vr = (int)correction;
-    int vy = LF_BASE_SPEED;
+    int vy = (int)g_runSpeed;
 
     mecanumDrive(0, vy, vr);
 }
@@ -122,6 +128,7 @@ void autoRunnerInit() {
     prevErr   = 0.0f;
     integral  = 0.0f;
     obstacleReported = false;
+    s_creepStart = 0;
     lineHealthReset();
     s_lineLostSent = false;
 }
@@ -129,7 +136,9 @@ void autoRunnerInit() {
 bool autoRunnerBusy() {
     return runState == RUN_LINE_FOLLOW ||
            runState == RUN_TURNING ||
-           runState == RUN_OBSTACLE;
+           runState == RUN_OBSTACLE ||
+           runState == RUN_CREEP_TO_CP ||
+           runState == RUN_CANCEL_FIND_CP;
 }
 
 void autoRunnerLoop() {
@@ -151,15 +160,14 @@ void autoRunnerLoop() {
     if (g_missionCancel) {
         g_missionCancel  = false;
         g_missionRunning = false;
-        motorStop();
-        runState = RUN_IDLE;
-        Serial.println("[RUN] cancelled → reading NFC");
-        // read current NFC checkpoint and report to ESP32
-        uint16_t nfcId = nfcReadCheckpoint();
-        if (nfcId != 0) {
-            reportCheckpoint(nfcId);
-            Serial.printf("[RUN] cancel CP=%u\n", nfcId);
-        }
+        // Do NOT stop — keep line-following blindly until we hit a checkpoint.
+        // That checkpoint is reported to ESP32 so the backend can compute the
+        // return route from a known position.
+        runState = RUN_CANCEL_FIND_CP;
+        prevErr  = 0.0f;
+        integral = 0.0f;
+        lineHealthReset();
+        Serial.println("[RUN] cancelled → blind follow to next CP");
         return;
     }
 
@@ -219,6 +227,90 @@ void autoRunnerLoop() {
                     Serial.printf("[RUN] mismatch got=%u exp=%u\n", nfcId, expected);
                 }
             }
+        }
+
+        // Line ended before NFC checkpoint – creep forward to reach tag
+        if (lineConsecLost() >= LINE_CREEP_TRIGGER && g_routeIdx < g_routeLen) {
+            motorStop();
+            runState = RUN_CREEP_TO_CP;
+            s_creepStart = millis();
+            Serial.println("[RUN] line ended → creep to CP");
+            break;
+        }
+        break;
+
+    case RUN_CREEP_TO_CP:
+        // Slowly creep forward until NFC reads expected checkpoint or timeout
+        mecanumDrive(0, CREEP_SPEED, 0);
+        {
+            uint16_t nfcId = nfcReadCheckpoint();
+            if (nfcId != 0 && g_routeIdx < g_routeLen) {
+                uint16_t expected = g_route[g_routeIdx].checkpointId;
+                uint8_t  action   = g_route[g_routeIdx].action;
+                motorStop();
+                if (nfcId == expected) {
+                    reportCheckpoint(nfcId);
+                    g_routeIdx++;
+                    if (g_routeIdx >= g_routeLen || action == 'S') {
+                        mecanumTurn180();
+                        motorStop();
+                        reportMissionDone();
+                        g_missionRunning = false;
+                        runState = RUN_DONE;
+                        Serial.println("[CREEP] arrived → 180° done");
+                    } else {
+                        startTurn(action);
+                        runState = RUN_LINE_FOLLOW;
+                        lineHealthReset();
+                        Serial.printf("[CREEP] CP %u ok → %c\n", nfcId, action);
+                    }
+                } else {
+                    reportMismatch(nfcId, expected);
+                    mecanumTurn180();
+                    g_missionRunning = false;
+                    runState = RUN_IDLE;
+                    Serial.printf("[CREEP] mismatch got=%u exp=%u\n", nfcId, expected);
+                }
+                break;
+            }
+        }
+        // Line reappeared – resume normal line following
+        if (lineDetected()) {
+            runState = RUN_LINE_FOLLOW;
+            lineHealthReset();
+            break;
+        }
+        // Timeout – truly lost, report and stop
+        if (millis() - s_creepStart > CREEP_TIMEOUT_MS) {
+            motorStop();
+            uartSendFrame(Serial2, CMD_LINE_LOST, nullptr, 0);
+            sendDebug("LINE: creep timeout");
+            g_missionRunning = false;
+            runState = RUN_IDLE;
+            Serial.println("[CREEP] timeout → line lost");
+        }
+        break;
+
+    // ── After cancel: follow line blindly until any checkpoint found ──
+    case RUN_CANCEL_FIND_CP:
+        lineFollowStep();
+        {
+            uint16_t nfcId = nfcReadCheckpoint();
+            if (nfcId != 0) {
+                motorStop();
+                reportCheckpoint(nfcId);   // ESP32 gets position → MQTT → backend → return route
+                runState = RUN_IDLE;
+                Serial.printf("[RUN] cancel found CP=%u → idle, wait return route\n", nfcId);
+                break;
+            }
+        }
+        // Line completely lost — stop and notify (ESP32 will retry return_request on timer)
+        if (lineConsecLost() >= LINE_LOST_THRESHOLD) {
+            motorStop();
+            uartSendFrame(Serial2, CMD_LINE_LOST, nullptr, 0);
+            sendDebug("LINE: cancel line lost");
+            runState = RUN_IDLE;
+            Serial.println("[RUN] cancel: line lost → idle");
         }
         break;
 

@@ -1,38 +1,23 @@
 #include "servo_control.h"
-#include <ESP32Servo.h>
+#include "uart_protocol.h"
 
-static Servo sX, sY;
-static int   curX = SERVO_X_CENTER;
-static int   curY = SERVO_Y_LEVEL;
+extern HardwareSerial Serial2;
 
-void servoInit() {
-    sX.attach(PIN_SERVO_X, 500, 2500);
-    sY.attach(PIN_SERVO_Y, 500, 2500);
-    sX.write(SERVO_X_CENTER);
-    sY.write(SERVO_Y_LEVEL);
+static int curY = SERVO_Y_LEVEL;
+
+static void sendToSTM32() {
+    // data[0] = X placeholder (90°), data[1] = Y angle
+    uint8_t data[2] = { 90, (uint8_t)constrain(curY, SERVO_MIN, SERVO_MAX) };
+    uartSendFrame(Serial2, CMD_SERVO_SET, data, 2);
 }
 
-void servoSetX(int angle) {
-    angle = constrain(angle, SERVO_MIN, SERVO_MAX);
-    sX.write(angle);
-    curX = angle;
+void servoInit() {
+    curY = SERVO_Y_LEVEL;
 }
 
 void servoSetY(int angle) {
-    angle = constrain(angle, SERVO_MIN, SERVO_MAX);
-    sY.write(angle);
-    curY = angle;
+    curY = constrain(angle, SERVO_MIN, SERVO_MAX);
+    sendToSTM32();
 }
 
-int servoGetX() { return curX; }
 int servoGetY() { return curY; }
-
-int servoReadXFeedback() {
-    return analogRead(PIN_SERVO_X_FB);
-}
-
-float servoReadXAngle() {
-    int raw = servoReadXFeedback();
-    // map ADC (300–3700) → 0–180°
-    return constrain(map(raw, 300, 3700, 0, 180), 0, 180);
-}

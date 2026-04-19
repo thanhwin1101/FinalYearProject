@@ -8,6 +8,11 @@
 #define PIN_UART_RX         PA3
 #define ESP_BAUD            115200
 
+// ── HuskyLens (USART3) ─────────────────────────────────────────────
+#define PIN_HUSKY_TX        PB10      // STM32 TX → HuskyLens RX
+#define PIN_HUSKY_RX        PB11      // STM32 RX ← HuskyLens TX
+#define HUSKY_BAUD          9600
+
 // ── L298N #1   (Front-Left & Front-Right motors) ───────────────────
 #define L1_IN1              PA0
 #define L1_IN2              PA1
@@ -17,16 +22,16 @@
 #define L1_ENB              PB0       // TIM3_CH3  PWM
 
 // ── L298N #2   (Back-Left & Back-Right motors) ─────────────────────
-//  NOTE: PC13 is open-drain on Blue Pill (max 3 mA, on-board LED).
-//        PC14 is the LSE oscillator pin – no hardware timer.
-//        PB14 has no direct timer channel on F103C8.
-//        Use analogWrite(); STM32duino may fall back to software PWM.
+//  PB3  = TIM2_CH2 (hardware PWM, safe with SWD debugger)  → L2_ENA (BL)
+//  PB5  = TIM3_CH2 (hardware PWM)                          → L2_ENB (BR)
+//  PA12 = standard GPIO (no HW timer needed for direction)  → L2_IN4 (BR)
+//  PC13 = REMOVED – open-drain 3mA LED pin, not suitable for motor drive
 #define L2_IN1              PB12
 #define L2_IN2              PB13
-#define L2_ENA              PB14      // (software) PWM
+#define L2_ENA              PB3       // TIM2_CH2 hardware PWM  (BL enable)
 #define L2_IN3              PB15
-#define L2_IN4              PC13      // limited drive – see note
-#define L2_ENB              PC14      // (software) PWM – see note
+#define L2_IN4              PA12      // standard GPIO           (BR direction)
+#define L2_ENB              PB5       // TIM3_CH2 hardware PWM  (BR enable)
 
 // ── PN532  NFC  (SPI1) ─────────────────────────────────────────────
 #define PN532_SCK           PA5
@@ -49,12 +54,18 @@
 // ── Motor parameters ────────────────────────────────────────────────
 #define PWM_FREQ            20000     // 20 kHz
 #define PWM_RES             8         // 8-bit
-#define MOTOR_RUN_SPEED     200       // 0-255
-#define MOTOR_TURN_SPEED    180
+#define MOTOR_RUN_SPEED     190       // 0-255  (runtime: g_runSpeed)
+#define MOTOR_TURN_SPEED    175       //         (runtime: g_turnSpeed)
 #define MOTOR_TURN_90_MS    950       // measured: ~950 ms for 90°
 #define MOTOR_TURN_180_MS   1900
 #define MOTOR_BRAKE_PWM     150
 #define MOTOR_BRAKE_MS      80
+
+// ── PWM soft-start / soft-stop ──────────────────────────────────────
+#define MOTOR_KICK_PWM      230       // kick-start PWM để thắng ma sát nghỉ
+#define MOTOR_KICK_MS       100       // thời gian kick (ms)
+#define MOTOR_SOFTSTOP_STEP 40        // bước giảm PWM mỗi tick khi soft-stop
+#define MOTOR_SOFTSTOP_MS   15        // ms mỗi bước (~5 bước từ 200→0)
 
 // ── Line-follower PID ───────────────────────────────────────────────
 #define LF_KP               0.35f
@@ -77,3 +88,12 @@
 
 // ── Route ───────────────────────────────────────────────────────────
 #define MAX_ROUTE_LEN        30
+
+// ── Servo Gimbal (Y axis only) ─────────────────────────────────────────
+// PB4  = TIM3_CH1 (requires disabling JTAG in setup — SWD flash still works)
+#define PIN_SERVO_Y         PB4
+#define SERVO_Y_LEVEL       100
+#define SERVO_Y_TILT_DOWN   45
+#define SERVO_Y_LOOK_UP     115
+#define SERVO_MIN           0
+#define SERVO_MAX           180

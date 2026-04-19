@@ -30,6 +30,7 @@ export interface CarryRobotStatus {
   name: string;
   status: string;
   statusText: string;
+  isOnline: boolean;
   batteryLevel: number;
   carrying: string;
   destination: string;

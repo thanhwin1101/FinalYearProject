@@ -13,8 +13,8 @@ static uint8_t  lastUid[7] = {};
 static uint8_t  lastUidLen  = 0;
 static uint32_t lastUidTime = 0;
 static uint32_t lastRetryMs = 0;
-static uint8_t  consecutiveFails = 0;
-static const uint8_t  MAX_CONSEC_FAILS = 20;  // ~20 × 100ms = 2s of failures → re-init
+static uint16_t       consecutiveFails = 0;
+static const uint16_t MAX_CONSEC_FAILS = 200; // ~200 × 100ms = 20s không có thẻ → re-init thật sự mất điện
 
 // Send short debug text to ESP32 (shows as [STM32] ... on monitor)
 static void sendDebug(const char *msg) {

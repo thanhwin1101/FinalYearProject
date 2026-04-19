@@ -4,10 +4,9 @@
 
 // ── Robot modes (matches ESP32 enum) ────────────────────────────────
 enum RobotMode : uint8_t {
-    MODE_AUTO   = 0,
-    MODE_FOLLOW = 1,
-    MODE_FIND   = 2,
-    MODE_RECOVERY = 3
+    MODE_AUTO     = 0,
+    MODE_FOLLOW   = 1,
+    MODE_RECOVERY = 2
 };
 
 // ── Route point ─────────────────────────────────────────────────────
@@ -30,6 +29,13 @@ extern volatile int16_t g_cmdVy;
 extern volatile int16_t g_cmdVr;
 extern volatile bool    g_newVelCmd;
 
+// per-wheel direct command (test lab)
+extern volatile int16_t g_wheelFL;
+extern volatile int16_t g_wheelFR;
+extern volatile int16_t g_wheelBL;
+extern volatile int16_t g_wheelBR;
+extern volatile bool    g_newWheelCmd;
+
 // mission control flags
 extern volatile bool    g_missionStart;
 extern volatile bool    g_missionCancel;
@@ -41,3 +47,7 @@ extern volatile bool    g_obstacleDetected;
 // latest NFC
 extern volatile uint16_t g_lastNfcId;
 extern volatile bool     g_newNfc;
+
+// tunable speeds (set via MQTT → ESP32 → CMD_TUNE_SPEED → STM32)
+extern volatile uint8_t  g_runSpeed;    // straight driving speed (default MOTOR_RUN_SPEED)
+extern volatile uint8_t  g_turnSpeed;   // 90°/180° turn speed   (default MOTOR_TURN_SPEED)

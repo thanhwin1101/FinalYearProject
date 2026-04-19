@@ -4,7 +4,7 @@
 
 void relayInit();
 
-void relayVisionOn();     // R1 – HuskyLens, servo, SR05
+void relayVisionOn();     // R1 – HuskyLens, servo
 void relayVisionOff();
 void relayLineNfcOn();    // R2 – line sensors + PN532
 void relayLineNfcOff();

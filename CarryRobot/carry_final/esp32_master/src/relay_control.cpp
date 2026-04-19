@@ -19,19 +19,19 @@ void relayAllOff() {
 void relaySetAuto() {
     relayVisionOff();
     relayLineNfcOn();
-    delay(200);
+    delay(5000);    // chờ PN532 + line sensor ổn định
 }
 
 void relaySetFollow() {
     relayLineNfcOff();
     relayVisionOn();
-    delay(300);
+    delay(5000);    // chờ HuskyLens + servo ổn định
 }
 
 void relaySetRecovery() {
     relayVisionOn();
     relayLineNfcOn();
-    delay(300);
+    delay(5000);    // chờ tất cả sensor ổn định
 }
 
 bool relayGetVision()  { return digitalRead(PIN_RELAY_VISION)   == HIGH; }
