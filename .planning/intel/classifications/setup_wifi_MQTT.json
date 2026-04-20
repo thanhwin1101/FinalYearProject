@@ -1,0 +1,24 @@
+{
+  "source_path": "C:\\Users\\ironc\\Desktop\\Hospital\\AGV\\docs\\setup_wifi_MQTT.txt",
+  "type": "DOC",
+  "confidence": "high",
+  "manifest_override": true,
+  "title": "ESP32 WiFi/MQTT Boot and Provisioning Flow",
+  "summary": "ASCII flowchart (in Vietnamese) describing ESP32 boot sequence: load saved WiFi/MQTT credentials from Preferences, attempt connection with timeouts, fall back to WiFiManager captive portal 'Robot_Setup' at 192.168.4.1, and restart on save.",
+  "scope": [
+    "ESP32 firmware boot flow",
+    "WiFi provisioning",
+    "MQTT provisioning",
+    "WiFiManager captive portal",
+    "Preferences/SPIFFS credential storage",
+    "OLED status display",
+    "Relay initialization",
+    "PN532 NFC reader init",
+    "UART command to STM32",
+    "MQTT topic subscription"
+  ],
+  "cross_refs": [],
+  "locked": false,
+  "precedence": 3,
+  "notes": ""
+}
