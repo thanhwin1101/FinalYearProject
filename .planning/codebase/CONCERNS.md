@@ -2,11 +2,17 @@
 
 > Technical debt, bugs, security, performance, fragility, and repo-hygiene concerns.
 > Generated: **2026-04-20**
+> Last revised: **2026-04-20** (sau đợt safety fix — xem §1.5)
 > Scope: `C:\Users\ironc\Desktop\Hospital`
 
 Severity legend: **CRITICAL** = production-blocker / security leak / data loss risk · **HIGH** = actively fragile, mitigate before next release · **MEDIUM** = real issue with known workaround · **LOW** = hygiene / nice-to-have.
 
 Concerns are grouped by subsystem. Each entry cites `path:line` so fixes can be tracked against git blame.
+
+> **2026-04 Update: Concerns ✅ FIXED đánh dấu STRIKETHROUGH trong bảng.**
+> Xem §1.5 "Đã fix trong đợt 2026-04" cuối file và
+> `.planning/intel/decisions.md` (ADR-009, ADR-010, ADR-011, ADR-012) cho
+> chi tiết rationale + reference vào code.
 
 ---
 
@@ -28,13 +34,13 @@ Concerns are grouped by subsystem. Each entry cites `path:line` so fixes can be 
 
 | # | Sev | File:Line | Description | Remediation |
 |---|-----|-----------|-------------|-------------|
-| A-BUG-01 | **CRITICAL** | `AGV/carry_final/stm32_slave/src/motor_control.cpp:111-119` (`motor_turnInPlace`) | Uses `delay(MOTOR_TURN_180_MS=1900ms)` / `delay(MOTOR_TURN_90_MS=950ms)` from `config.h:58-59`. The main loop, UART RX, ToF polling, NFC polling, cancel handling **are all frozen for ~1-2 s during every turn.** An obstacle appearing mid-turn, or an ESP32 cancel, cannot stop the robot. | Replace with non-blocking timer state-machine: start turn, record start-tick, let `loop()` poll sensors and break early on obstacle / cancel. |
-| A-BUG-02 | **CRITICAL** | `AGV/carry_final/stm32_slave/src/main.cpp:99` + `:215` | STM32 always reports `uart_send_battery(100)` — comment: *"chưa đo pin trên STM32 — dummy 100%"*. ESP32 also explicitly ignores it: `esp32_master/src/main.cpp:114` *"tạm tắt – luôn giữ 100%"*. The low-battery safety gates in `mqtt_client.cpp:81-90` (mission reject) and `follow_mode.cpp:51` (10 s → Recovery) are therefore **never triggered on the STM32 channel**; only ESP32's own ADC (`battery.cpp`) still works — but its floor `BATT_PCT_AT_MIN=10%` means the reading clamps at 10 % and hides deeper depletion. | Wire the STM32 ADC divider (Checklist 2.14), publish real SoC over UART `CMD_BATTERY`. Remove the `= 100` overrides in `main.cpp:114` and `main.cpp:233`. Lower `BATT_PCT_AT_MIN` floor to 0 % so empty shows as empty. |
+| ~~A-BUG-01~~ | ~~**CRITICAL**~~ | `stm32_slave/src/motor_control.cpp` | **✅ FIXED 2026-04** — Non-blocking turn API (`motor_startTurn` / `motor_turnStep` / `motor_abortTurn`). AUTO_DO_TURN state giờ thực sự poll mỗi tick. UART vẫn xử lý trong khi quay → CANCEL latency < 10 ms (trước ~1-2 s). Xem ADR-009. | _fixed_ |
+| A-BUG-02 | **MEDIUM** (downgraded) | `stm32_slave/src/main.cpp`, `esp32_master/src/main.cpp` | **✅ PARTIAL FIX 2026-04** — Dummy `uart_send_battery(100)` từ STM32 đã loại bỏ + comment "tạm tắt" đã clarify thành "reserved for future motor battery". ESP32 ADC path vẫn là single source. **Còn lại:** `BATT_PCT_AT_MIN=10 %` floor vẫn hide voltage critical low — nhưng gate >=30 % ở trên floor nên safety không bị ảnh hưởng. Xem ADR-005. | Tùy chọn: hạ `BATT_PCT_AT_MIN` xuống 0 để hiển thị chính xác hơn khi pin < 3.036 V (tránh người dùng hiểu nhầm 10 % khi pin dead). |
 | A-BUG-03 | **HIGH** | `AGV/carry_final/esp32_master/src/auto_mode.cpp:149-156` | Inside `case AUTO_RUNNING:` there is `if (g_autoState == AUTO_WAIT_START) { … }` — **unreachable code** (state is `AUTO_RUNNING` by definition of the case). The intended "new checkpoint arrived mid-run" handling never fires. | Restructure the check outside the switch, or set `g_newCheckpoint` via the MQTT callback and handle only via `g_mqttCancel` + route replacement at `AUTO_IDLE`. |
 | A-BUG-04 | **HIGH** | `AGV/carry_final/esp32_master/src/recovery_mode.cpp:14-31` (vs `AGV/docs/Follow_mode.txt` §Recovery §GIAI ĐOẠN 1-3) | Recovery Mode in code is a stub: it sends `CMD_SET_MODE(AUTO) + CMD_CANCEL_MISSION` and blindly follows the line to any CP. The design doc specifies Huskylens servo-X scan to find the line, then line-follow to nearest known NFC. Divergence means robot cannot recover if it is **off the line** (exact case the doc targets). | Implement the doc'd two-stage recovery: (1) servo-scan + Huskylens line-hunt, (2) NFC-anchored return. |
 | A-BUG-05 | **HIGH** | `AGV/carry_final/esp32_master/src/recovery_mode.cpp:22` | Enters Recovery with `relaySetAuto()` — auto profile powers OFF the vision relay (Huskylens + servo lose power). Even the stub recovery can't use vision if you extend it later. | Call `relaySetRecovery()` (or equivalent all-on profile) at recovery entry. |
-| A-BUG-06 | **HIGH** | `AGV/carry_final/esp32_master/src/main.cpp:209-230` (`checkModeSwitch`) vs `AGV/docs/Checklist.txt §1.9` | Checklist requires mode switch only at **MED IDLE**. Code only gates `AUTO → FOLLOW` by `g_autoState == AUTO_IDLE`. `FOLLOW → AUTO` is always allowed, even mid-mission with tag locked. | Gate both directions on `AUTO_IDLE && FOLLOW_IDLE`. Require physical bed (MED) return (or `nfc_lastId == BASE_ID`) before any mode switch. |
-| A-BUG-07 | **HIGH** | `AGV/carry_final/stm32_slave/src/auto_runner.cpp:122` (`line_isLost`) | On line-loss in AUTO_RUNNING, robot **reduces speed but keeps moving** for up to 400 ms before sending `uart_send_line_lost()`, rate-limited to 1.5 s between reports. For 400 ms the robot drifts in the last command direction; in corners it can wander metres off-course. | Brake on `line_isLost` after ≤100 ms; only then start the retry/search timer. Reset `lostAt` on first clean line sample. |
+| ~~A-BUG-06~~ | ~~**HIGH**~~ | `esp32_master/src/main.cpp` (`checkModeSwitch`) | **✅ FIXED 2026-04** — MED-gate. Long press AUTO→FOLLOW chỉ cho phép khi `g_autoState == AUTO_IDLE && (g_lastCheckpointId == MED_CHECKPOINT_ID || g_lastCheckpointId == 0)`. FOLLOW→AUTO chỉ khi `g_followState == FOLLOW_IDLE`. Recovery KHÔNG cho thoát qua nút. Xem ADR-010. | _fixed_ |
+| ~~A-BUG-07~~ | ~~**HIGH**~~ | `stm32_slave/src/auto_runner.cpp` (`lineFollowStep`) | **✅ FIXED 2026-04** — 3-tier line-lost policy: 0-400 ms creep + report; 400-1500 ms creep tiếp; > 1500 ms hard brake + AUTO_IDLE + `uart_send_event(error)`. Robot không còn drift quá 1.5 s. Xem ADR-011. | _fixed_ |
 | A-BUG-08 | **MEDIUM** | `AGV/carry_final/stm32_slave/src/motor_control.cpp:111-119` (`motor_brake`) | Every checkpoint hits `motor_brake()` which includes an 80 ms blocking delay (called in `auto_runner.cpp` on CP detect). Adds up across a 10-CP route. | Make brake duration advisory; hand control back to main loop immediately. |
 | A-BUG-09 | **MEDIUM** | `AGV/carry_final/stm32_slave/src/main.cpp` (route parser) | `parseRouteFrame` validates total size but does not range-check individual action bytes. Invalid enum values (e.g. action byte = 0x42) reach `actionToTurnDir` and silently map to "straight" or "unknown". | Reject the frame and NACK on out-of-range action bytes. |
 | A-BUG-10 | **MEDIUM** | `AGV/carry_final/esp32_master/src/follow_mode.cpp:51,93` | Low-battery and tag-lost countdowns (10 s / 30 s) use `millis()` deltas without overflow guard. 49.7 days uptime causes spurious single trigger. | Use `int32_t(now - t0) >= T` pattern (already used in some places — propagate). |
@@ -45,9 +51,9 @@ Concerns are grouped by subsystem. Each entry cites `path:line` so fixes can be 
 
 | # | Sev | File:Line | Description | Remediation |
 |---|-----|-----------|-------------|-------------|
-| A-ARCH-01 | **HIGH** | `AGV/carry_final/esp32_master/src/main.cpp` (no `xTaskCreate*` calls anywhere) vs `AGV/docs/Checklist.txt §1.18` | Checklist mandates FreeRTOS tasks (MQTT / UART / Control / OLED / Button / Battery). Actual firmware runs the full stack in the single `loop()`. Consequence: `ArduinoOTA.handle()` can starve UART drain; a slow Huskylens read stalls MQTT keepalive; watchdog feed is coupled to everything. | Introduce tasks per module with priorities (UART RX = highest, MQTT = high, OLED = low) or, as an interim, aggressively chunk each sub-handler with hard budgets. |
-| A-ARCH-02 | **HIGH** | `AGV/carry_final/esp32_master/src/main.cpp` (no `esp_task_wdt_*`) vs `AGV/docs/Checklist.txt §1.1` | No hardware / task watchdog is initialized on ESP32. If `loop()` blocks (e.g., PubSubClient stuck on a dead socket, or a Huskylens call hanging 5 s), the unit doesn't reset. | `esp_task_wdt_init(5, true); esp_task_wdt_add(NULL); ` + feed in main loop and each long sub-handler. |
-| A-ARCH-03 | **HIGH** | `AGV/carry_final/esp32_master/src/main.cpp` setup (`delay(5000)` during relay stabilisation) and `AGV/carry_final/esp32_master/src/config.h` (`WM_PORTAL_TIMEOUT 0`) | Infinite WiFiManager portal timeout: a fresh-boot robot without known SSID sits in portal forever, blocking auto-reconnect to the backend. 5 s boot delay is blocking and defeats watchdog. | Finite portal timeout (e.g. 180 s) with fallback to last-known creds; turn the boot delay into a non-blocking state. |
+| A-ARCH-01 | **MEDIUM** (downgraded) | `esp32_master/src/main.cpp` (no `xTaskCreate*`) | **🟡 ACCEPTED 2026-04** — Quyết định KHÔNG dùng FreeRTOS tasks (xem ADR-007). Thay vào đó: (1) WDT 30 s feed mỗi loop iteration, (2) tất cả handler chunked < 100 ms, (3) blocking delays cắt từ 5 s → 200-1500 ms. Race condition risk thấp vì single-loop. Sẽ chỉ revisit khi feature mới đòi (vd. dual-Huskylens). | _N/A — accepted_ |
+| ~~A-ARCH-02~~ | ~~**HIGH**~~ | `esp32_master/src/main.cpp` | **✅ FIXED 2026-04** — `esp_task_wdt_init(WDT_TIMEOUT_S=30, true)` trong `setup()`; `esp_task_wdt_reset()` ở đầu mỗi `loop()` + trong các handler dài (MQTT reconnect, OLED render). Panic = true → reset board nếu treo. Xem ADR-008. | _fixed_ |
+| A-ARCH-03 | **MEDIUM** (downgraded) | `esp32_master/src/main.cpp` setup, `config.h` `WM_PORTAL_TIMEOUT=0` | **✅ PARTIAL FIX 2026-04** — Boot delay 5 s → 1.5 s (WDT-fed loop). Relay settle 5 s → 800 ms (`RELAY_SETTLE_MS`). **Còn lại:** `WM_PORTAL_TIMEOUT=0` (infinite) — đây là chủ ý cho robot tại factory mới boot lần đầu cần config; nên giữ. Production có thể override = 180 trong build flag. | Tùy site: thêm `-DWM_PORTAL_TIMEOUT=180` cho hospital deployment. |
 | A-ARCH-04 | **MEDIUM** | `AGV/carry_final/esp32_master/src/globals.h`, `stm32_slave/src/globals.h` | Shared flags use `volatile` only (no mutex/atomic). That's correct only because today everything runs in `loop()`. Moment tasks are added (A-ARCH-01) these become race conditions (e.g. `g_velUpdatedAt`, `g_newCheckpoint`, `g_mqttCancel`). | Switch to `std::atomic` or FreeRTOS queues before tasking. |
 | A-ARCH-05 | **MEDIUM** | `AGV/carry_final/stm32_slave/src/follow_runner.cpp` (FOLLOW_VEL_TIMEOUT_MS=500) | Follow-mode safety: motors stop only after 500 ms of velocity silence. During WiFi glitches or Huskylens lag this causes jerky stop/start. | Reduce to 200 ms and smooth via ramp-down; add explicit `CMD_FOLLOW_PAUSE` to distinguish "no update" from "intentional hold". |
 | A-ARCH-06 | **MEDIUM** | `AGV/carry_final/stm32_slave/src/tof_sensor.cpp` (`Wire.setClock(100000)`) | 100 kHz I²C is a deliberate choice for long wires — not a concern — but it is **undocumented**. Anyone raising it to 400 kHz later will get mysterious VL53L0X timeouts. | Add inline comment + note in `AGV/docs/Pinout.txt`. |
@@ -57,9 +63,25 @@ Concerns are grouped by subsystem. Each entry cites `path:line` so fixes can be 
 
 | # | Sev | File:Line | Description | Remediation |
 |---|-----|-----------|-------------|-------------|
-| A-TD-01 | **HIGH** | `AGV/docs/Checklist.txt` items §1.1, §1.13, §1.18, §2.14 still `[ ]` | Watchdog, battery-threshold enforcement, FreeRTOS tasks, STM32 ADC pin — all marked unfinished yet firmware is already in the field binary at repo root (`stm32_slave.bin`). Design-doc and built-binary disagree. | Update checklist or close gaps (see A-ARCH-01/02/03, A-BUG-02). Do not ship until the box is checked in CI. |
-| A-TD-02 | **MEDIUM** | `AGV/carry_final/esp32_master/src/main.cpp:114,233` | Battery monitor is commented *"tạm tắt"* (temporarily disabled). Temporary code paths always outlive the temporary. | Either delete the battery path entirely (document explicitly) or finish A-BUG-02 and remove the stub. |
+| ~~A-TD-01~~ | ~~**HIGH**~~ | `AGV/docs/Checklist.txt` | **✅ FIXED 2026-04** — Checklist.txt được rewrite hoàn toàn với 3-state legend (`[x]/[~]/[ ]`), reflect trạng thái thực, kèm "LOCKED decisions" L1-L7 và "Known Gaps" G1-G5. FreeRTOS đánh dấu intentional skip (ADR-007) chứ không phải TODO. | _fixed_ |
+| ~~A-TD-02~~ | ~~**MEDIUM**~~ | `esp32_master/src/main.cpp` | **✅ FIXED 2026-04** — Comment "tạm tắt" thay bằng giải thích rõ ràng: STM32 không sở hữu battery telemetry (xem ADR-005). | _fixed_ |
 | A-TD-03 | **LOW** | `AGV/docs/Auto_mode.txt` §Mismatch / §Return-when-cancelled | Behaviour described in docs: on ID mismatch, enter `AUTO_BLIND_FOLLOW` and report any CP reached. This *is* implemented (`stm32_slave/src/auto_runner.cpp` has the state), but no MQTT event distinguishes "arrived at correct CP" vs "arrived at fallback CP after mismatch". | Add a `mismatch_resolved` event field so backend can flag disturbed missions. |
+
+### 1.5 Đã fix trong đợt 2026-04 (safety alignment wave)
+
+| ID | What | Files chạm | Verify |
+|----|------|------------|--------|
+| FIX-01 | Non-blocking turn (A-BUG-01) | `stm32_slave/src/motor_control.{h,cpp}`, `auto_runner.cpp` | PlatformIO build STM32 PASS · UART CANCEL trong khi quay được xử lý ngay |
+| FIX-02 | Line-lost safe brake (A-BUG-07) | `stm32_slave/src/auto_runner.cpp` | Mất line > 1.5 s → hard stop, không drift |
+| FIX-03 | Bỏ dummy battery 100 % từ STM32 (A-BUG-02 partial) | `stm32_slave/src/main.cpp`, `uart_protocol.h` (cả 2 phía) | STM32 không spam CMD_BATTERY nữa; ESP32 ADC vẫn là single source |
+| FIX-04 | Task watchdog ESP32 (A-ARCH-02) | `esp32_master/src/main.cpp`, `config.h` | `esp_task_wdt_init(30, true)` + reset mỗi loop & boot phase |
+| FIX-05 | MED-gate cho mode switch (A-BUG-06) | `esp32_master/src/main.cpp` (`checkModeSwitch`) | Chỉ AUTO_IDLE ∧ at MED mới cho long press AUTO→FOLLOW |
+| FIX-06 | Emergency stop MQTT `{"action":"stop"}` (mới) | `esp32_master/src/main.cpp` (`checkEmergencyStop`) | OLED hiện "EMERGENCY STOP", motor zero, freeze tới khi `{"action":"resume"}` |
+| FIX-07 | Boot/relay delay 5 s → 200-1500 ms (A-ARCH-03 partial) | `esp32_master/src/main.cpp`, `relay_control.cpp`, `config.h` | `RELAY_SETTLE_MS=800` |
+| FIX-08 | Comment "tạm tắt" battery → giải thích rõ (A-TD-02) | `esp32_master/src/main.cpp` | Không còn misleading wording |
+| FIX-09 | Checklist.txt rewrite + ADRs (A-TD-01) | `AGV/docs/Checklist.txt`, `.planning/intel/decisions.md` (12 ADRs) | Doc ↔ code thống nhất |
+
+Build verification: PlatformIO `pio run -e esp32_master` ✅ và `pio run -e bluepill_f103c8` ✅ đều SUCCESS sau loạt fix.
 
 ---
 
@@ -106,15 +128,28 @@ Concerns are grouped by subsystem. Each entry cites `path:line` so fixes can be 
 
 ---
 
-## 4. Priority remediation order (suggested)
+## 4. Priority remediation order (revised 2026-04)
 
-1. **H-SEC-01** + **A-SEC-01** + **A-SEC-02** — rotate all credentials, purge `.env` from git history.
-2. **A-BUG-01** (blocking turns) + **A-BUG-02** (fake battery) — real-world safety.
-3. **H-SEC-03** — add authentication to the API surface before piloting with real patient data.
-4. **A-SEC-03** — sign STM32 OTA before any remote-update rollout.
-5. **A-ARCH-02** (watchdog) + **A-ARCH-01** (tasks) — resilience.
-6. Everything else (MEDIUM/LOW) as planned debt during next milestone.
+✅ Đã làm đợt này (xem §1.5):
+- A-BUG-01, A-BUG-07, A-BUG-02 (partial), A-BUG-06
+- A-ARCH-02, A-ARCH-03 (partial)
+- A-TD-01, A-TD-02
+- + Emergency stop (mới, không có trong list gốc)
+
+🔥 Còn lại — ưu tiên trước khi pilot với dữ liệu bệnh nhân thật:
+1. **H-SEC-01 + A-SEC-01 + A-SEC-02** — rotate credentials, `git filter-repo` để purge `.env`, đổi password OTA per-device. Đây là **blocker đầu tiên**.
+2. **H-SEC-03** — gắn auth middleware (JWT/session) vào tất cả Backend routes + SSE `/api/robots/live`.
+3. **A-SEC-03** — Ed25519 sign STM32 OTA + HTTPS pin trước khi enable remote firmware push.
+4. **A-SEC-05** — HMAC/nonce cho MQTT `relay`, `direct_vel`, `wheel_set` payloads (motion-related commands).
+5. **A-BUG-04 + A-BUG-05** — Implement real Recovery Mode 2 giai đoạn (Huskylens scan → NFC) thay stub hiện tại; chuyển `relaySetAuto()` → `relaySetRecovery()` ở entry.
+6. **H-SEC-06 + H-SEC-08** — magic-byte validate file upload, helmet + rate-limit baseline.
+
+🟡 Optional/đã accepted (có thể bỏ qua nếu scope hẹp):
+- A-ARCH-01 (FreeRTOS) — accepted via ADR-007.
+- A-BUG-02 floor 10 % — cosmetic.
+- A-ARCH-03 portal timeout — chủ ý cho factory boot.
 
 ---
 
 _Last updated: 2026-04-20._
+_Wave 1 fix: 2026-04-20 (xem §1.5 + ADRs)._

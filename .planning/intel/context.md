@@ -4,6 +4,14 @@ Running notes keyed by topic, with source attribution. These are DOC-class
 observations: commentary, implementation hints, and open items that are
 neither locked decisions, requirements, nor hard constraints.
 
+> **Update 2026-04 — các open question phía dưới ĐÃ RESOLVED trong
+> [.planning/intel/decisions.md](./decisions.md) sau đợt code alignment.
+> Các resolved questions: OLED mockups (ADR-013 trong checklist), MQTT topic
+> names (ADR-004), pin assignments (config.h), battery ownership (ADR-005),
+> Find fallback (ADR-006), reconnect backoff (3 s constant), 3-relay → 2-relay
+> (ADR-003), FreeRTOS disabled (ADR-007). Giữ file này nguyên làm audit
+> trail để hiểu quyết định trước đây.**
+
 ---
 
 ## Topic: System architecture (overview)
