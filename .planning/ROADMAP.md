@@ -38,10 +38,10 @@ Decimal phases appear between their surrounding integers in numeric order.
 **ADR linkage**: Khép khoảng "Deferred — Credential rotation" trong `.planning/intel/decisions.md` và đóng CONCERNS H-SEC-01, A-SEC-01, A-SEC-02, A-SEC-04, R-HYG-01.
 
 Plans:
-- [ ] 01-01: Rotate toàn bộ MQTT/Mongo/OTA credentials + update Mosquitto user DB + document quy trình rotate (SEC-02 phần rotation).
-- [ ] 01-02: `git filter-repo` purge `.env` + `.env.example` placeholder sạch + firmware/backend fail-fast khi thiếu env (SEC-01 + SEC-02 phần repo).
-- [ ] 01-03: Bật gitleaks GitHub Action trên mọi PR + allowlist rules + fake-secret test PR để verify (SEC-03).
-- [ ] 01-04: Per-device OTA password derived từ `ESP.getEfuseMac()` + deployment salt, lưu NVS trong bước provisioning, loại bỏ `OTA_PASSWORD` constant (SEC-04).
+- [ ] 01-01-PLAN.md — Rotate Mosquitto password via scripts/rotate-mosquitto-password.ps1 + scripts/generate-secure-password.ps1 + docs/SECURITY-ROTATION.md runbook (SEC-02 rotation portion). Wave 1, autonomous.
+- [ ] 01-02-PLAN.md — `git filter-repo` history purge + sanitized .env.example + remove MQTT_DEFAULT_*/OTA_PASSWORD + firmware/backend fail-fast + g_credsMissing + OLED "CRED MISSING" screen + .gitignore hardening (SEC-01 + SEC-02 repo portion). Wave 2, non-autonomous (history-rewrite checkpoint).
+- [ ] 01-03-PLAN.md — gitleaks runner + trufflehog v3 pre-commit + pre-push hook + sentinel fixture + test-scan-rejects-sentinel.ps1 + docs/DEV-SETUP.md (SEC-03). Wave 3, autonomous.
+- [ ] 01-04-PLAN.md — Per-device OTA password via HMAC-SHA256(deployment salt, chip MAC) + provisioning console (NVS_WRITE/READ/ERASE/FINGERPRINT) + scripts/provision-esp32.ps1 + OLED fingerprint display + 3-second BOOT-hold provisioning entry (SEC-04). Wave 3, non-autonomous (salt-strategy decision checkpoint).
 
 ### Phase 02: MQTT Broker Hardening (TLS + ACL + HMAC)
 **Goal**: Broker Mosquitto chỉ chấp nhận kết nối TLS authenticated; mỗi robot chỉ publish vào subtree của chính nó; motion command bắt buộc HMAC+nonce; backend validate payload schema trước khi ghi DB.
