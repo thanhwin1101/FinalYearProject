@@ -179,6 +179,13 @@ public:
 
         HUSKYLENSResult r = _husky.read();
 
+        // ID gate: only follow tags whose learned ID is > 1.
+        // Anything else (untrained, ID 0, ID 1) → ignore + brake.
+        if (r.ID < FOLLOW_MIN_ID) {
+            _drive->stop();
+            return;
+        }
+
         // Tag re-acquired — clear lost flag.
         if (_reportedLost) {
             _reportedLost = false;
@@ -196,14 +203,19 @@ public:
         //   tag BELOW  (errY > 0) → want servo angle to DECREASE  (look down)
         // delta = KP * errY  (positive when tag below) →  servoPos -= delta.
         int errY = r.yCenter - HUSKY_CY;
-        if (abs(errY) > SERVO_Y_DEADBAND) {
-            float deltaF = SERVO_Y_KP * (float)errY;
-            // Slew-rate limit for smoother motion.
+        // Tick gate: only update servo every SERVO_Y_TICK_MS to enforce
+        // slew rate. Without this, repeated calls chain MAX_STEP every
+        // few ms and we get the up/down swing.
+        const uint32_t nowMs = millis();
+        if (nowMs >= _servoNextMs && abs(errY) > SERVO_Y_DEADBAND) {
+            _servoNextMs = nowMs + SERVO_Y_TICK_MS;
+            // PD on errY: P pulls toward centre, D damps overshoot.
+            int dErrY    = errY - _lastErrY;
+            float deltaF = SERVO_Y_KP * (float)errY + SERVO_Y_KD * (float)dErrY;
+            _lastErrY    = errY;
             int delta = (int)deltaF;
             if (delta >  SERVO_Y_MAX_STEP) delta =  SERVO_Y_MAX_STEP;
             if (delta < -SERVO_Y_MAX_STEP) delta = -SERVO_Y_MAX_STEP;
-            // If KP*errY rounds to 0 but we're outside the deadband,
-            // still nudge by 1° in the correct direction.
             if (delta == 0) delta = (errY > 0) ? 1 : -1;
 #if SERVO_Y_REVERSED
             _servoPos += delta;
@@ -213,6 +225,10 @@ public:
             if (_servoPos < SERVO_Y_MIN) _servoPos = SERVO_Y_MIN;
             if (_servoPos > SERVO_Y_MAX) _servoPos = SERVO_Y_MAX;
             _servoY.write(_servoPos);
+        } else if (abs(errY) <= SERVO_Y_DEADBAND) {
+            // In deadband: zero the D-term history so we don't kick on
+            // re-entry.
+            _lastErrY = 0;
         }
 
         // --- Z-axis STRICT 30 % area rule -----------------------
@@ -236,12 +252,50 @@ public:
         if (corr >  FOLLOW_X_MAX_BOOST) corr =  FOLLOW_X_MAX_BOOST;
         if (corr < -FOLLOW_X_MAX_BOOST) corr = -FOLLOW_X_MAX_BOOST;
 
-        // Tag on LEFT  (errX < 0) → boost RIGHT wheel → yaw left.
-        // Tag on RIGHT (errX > 0) → boost LEFT  wheel → yaw right.
-        int leftBoost  = (corr > 0) ? (int)corr       : 0;
-        int rightBoost = (corr < 0) ? (int)(-corr)    : 0;
-        int left  = FOLLOW_CRUISE_PWM + leftBoost;
-        int right = FOLLOW_CRUISE_PWM + rightBoost;
+        // --- Speed-by-area: cruise PWM scales with tag size --------
+        // pct=0   → FOLLOW_PWM_MAX (255, far away → sprint).
+        // pct=30  → FOLLOW_PWM_MIN (150, near → gentle).
+        int cruise = (int)FOLLOW_PWM_MAX -
+                     ((int)(FOLLOW_PWM_MAX - FOLLOW_PWM_MIN) * (int)pct100) /
+                     (int)FOLLOW_AREA_STOP_PCT;
+        if (cruise < (int)FOLLOW_PWM_MIN) cruise = (int)FOLLOW_PWM_MIN;
+        if (cruise > (int)FOLLOW_PWM_MAX) cruise = (int)FOLLOW_PWM_MAX;
+
+        // Symmetric steering per spec:
+        //   Tag LEFT  (errX < 0, corr < 0): RIGHT wheel UP, LEFT wheel DOWN
+        //   Tag RIGHT (errX > 0, corr > 0): LEFT  wheel UP, RIGHT wheel DOWN
+        int boost = (int)((corr < 0) ? -corr : corr);   // |corr|
+        int left, right;
+        if (errX < 0) {            // tag on the LEFT  → turn left
+            right = cruise + boost;
+            left  = cruise - boost;
+        } else if (errX > 0) {     // tag on the RIGHT → turn right
+            left  = cruise + boost;
+            right = cruise - boost;
+        } else {                   // perfectly centred
+            left  = cruise;
+            right = cruise;
+        }
+        // Clamp to legal PWM range. Floor of 0 (not FOLLOW_PWM_MIN) so the
+        // inner wheel can fully back off on sharp corrections.
+        if (left  > (int)FOLLOW_PWM_MAX) left  = (int)FOLLOW_PWM_MAX;
+        if (right > (int)FOLLOW_PWM_MAX) right = (int)FOLLOW_PWM_MAX;
+        if (left  < 0) left  = 0;
+        if (right < 0) right = 0;
+
+        // Throttled debug → master serial so we can see speed scaling.
+        static uint32_t tDbg = 0;
+        if (millis() >= tDbg) {
+            tDbg = millis() + 500;
+            char buf[48];
+            snprintf(buf, sizeof(buf),
+                     "pct=%d,cr=%d,errX=%d,L=%d,R=%d",
+                     (int)pct100, cruise, errX, left, right);
+            // Same <CMD:data> wire format as the rest of the protocol so
+            // the master prints it via [UART<-] FOL : ...
+            Serial1.print('<'); Serial1.print("FOL"); Serial1.print(':');
+            Serial1.print(buf); Serial1.print('>');
+        }
         _drive->drive(left, right);
     }
 
@@ -252,6 +306,8 @@ private:
     MotorTankDrive*  _drive    = nullptr;
     int              _servoPos = SERVO_Y_HOME;
     int              _lastErrX = 0;
+    int              _lastErrY = 0;
+    uint32_t         _servoNextMs = 0;
     uint32_t         _warmupUntil = 0;
     bool             _enabled  = false;
     bool             _ready    = false;

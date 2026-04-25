@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
-import { Users, Bot, Hospital, RefreshCw, Bell, X, CheckCheck, FlaskConical } from 'lucide-react';
+import { Users, Bot, Hospital, RefreshCw, Bell, X, CheckCheck } from 'lucide-react';
 import { Button } from '@/app/components/ui/button';
 import { PatientDashboard } from '@/app/components/PatientDashboard';
 import { RobotCenter } from '@/app/components/RobotCenter';
-import { RobotTestLab } from '@/app/components/RobotTestLab';
 import { PatientDetails } from '@/app/components/PatientDetails';
 import { ConnectionStatus } from '@/app/components/ConnectionStatus';
 import { RFIDProvider } from '@/app/contexts/RFIDContext';
@@ -13,7 +12,7 @@ import { useRobots } from '@/app/hooks/useRobots';
 import { useAlerts } from '@/app/hooks/useAlerts';
 import { useMissions } from '@/app/hooks/useMissions';
 
-type Module = 'patients' | 'robot' | 'lab';
+type Module = 'patients' | 'robot';
 
 export default function App() {
   const [currentModule, setCurrentModule] = useState<Module>('patients');
@@ -277,15 +276,6 @@ export default function App() {
                 <Bot className="w-5 h-5 mr-2" />
                 Robot Center
               </Button>
-              <Button
-                variant={currentModule === 'lab' ? 'default' : 'ghost'}
-                onClick={() => setCurrentModule('lab')}
-                className="rounded-none border-b-2 border-transparent data-[active=true]:border-primary text-base py-3 px-6"
-                data-active={currentModule === 'lab'}
-              >
-                <FlaskConical className="w-5 h-5 mr-2" />
-                Robot test lab
-              </Button>
             </div>
           </div>
         </nav>
@@ -300,7 +290,7 @@ export default function App() {
             onUpdatePatient={handleUpdatePatient}
             onDeletePatient={handleDeletePatient}
           />
-        ) : currentModule === 'robot' ? (
+        ) : (
           <RobotCenter
             patients={patients}
             robots={robots}
@@ -308,8 +298,6 @@ export default function App() {
             onCancelTask={handleCancelRobotTask}
             onSendRobot={handleSendRobot}
           />
-        ) : (
-          <RobotTestLab />
         )}
       </main>
 

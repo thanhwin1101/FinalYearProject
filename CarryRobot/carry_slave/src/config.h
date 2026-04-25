@@ -18,8 +18,8 @@
 // Chọn PA2/PA3 (USART2 không dùng → GPIO trống, 5V tolerant).
 #define PIN_SR05_TRIG       PA2
 #define PIN_SR05_ECHO       PA3
-#define SR05_STOP_CM        25          // brake threshold
-#define SR05_RESUME_CM      35          // resume threshold
+#define SR05_STOP_CM        20          // brake threshold (lowered: noise floor ~27 cm)
+#define SR05_RESUME_CM      40          // resume threshold (above noise floor)
 
 // ====================================================================
 //  SINGLE L298N driving 4 wheels (both left in parallel on one channel,
@@ -39,7 +39,7 @@
 #define PIN_MOT_RIGHT_EN    PB1         // ENB  (TIM3_CH4  hardware PWM)
 
 // ---- Motor tuning --------------------------------------------------
-#define DRIVE_MAX_PWM       230
+#define DRIVE_MAX_PWM       255
 #define DRIVE_CRUISE_PWM    190
 #define DRIVE_TURN_PWM      180
 #define DRIVE_BRAKE_PWM     180
@@ -83,9 +83,18 @@
 #define SERVO_Y_WARMUP_MS   3000        // wait 3s after Follow entry before any servo motion
 #define SERVO_Y_REVERSED    1           // 1 = invert servo direction (mechanical mounting)
 #define FOLLOW_LOST_MS      8000        // grace period before reporting tag lost (ms)
-#define SERVO_Y_KP          0.08f       // faster tag tracking (was 0.02)
-#define SERVO_Y_DEADBAND    10          // tighter centering (was 20)
-#define SERVO_Y_MAX_STEP    4           // up to 4° per tick (~50 ms) → ~80°/s
+// Servo-Y closed loop: proportional + derivative + slew limit.
+// Oscillation cause = high KP and no D-term → overshoot above/below
+// centre. Tuned values:
+//   - smaller KP                        → less overshoot
+//   - larger deadband (~25 px)          → ignore tiny jitter near centre
+//   - small KD                          → damp the swing
+//   - tighter max step + min update gap → enforce slew rate
+#define SERVO_Y_KP          0.04f
+#define SERVO_Y_KD          0.05f
+#define SERVO_Y_DEADBAND    25
+#define SERVO_Y_MAX_STEP    2           // ~2°/tick → smooth ramp
+#define SERVO_Y_TICK_MS     40          // PID period (ms)
 
 // ---- HuskyLens screen geometry & Follow-Mode constants ------------
 #define HUSKY_SCREEN_W          320
@@ -97,12 +106,19 @@
 // STRICT spec: area ≥ 30 % → STOP, area < 30 % → move forward
 #define FOLLOW_AREA_STOP_PCT    30
 
-#define FOLLOW_CRUISE_PWM       170         // both wheels get at least this
-#define FOLLOW_X_KP             0.45f
-#define FOLLOW_X_KD             0.25f
+// Speed-by-area: cruise PWM scales linearly with the tag’s on-screen
+// area percentage. Tag tiny (far)  → FOLLOW_PWM_MAX (sprint to catch up).
+// Tag near STOP threshold        → FOLLOW_PWM_MIN (gentle approach).
+#define FOLLOW_PWM_MIN          150
+#define FOLLOW_PWM_MAX          180
+#define FOLLOW_CRUISE_PWM       FOLLOW_PWM_MIN  // legacy floor
+#define FOLLOW_X_KP             0.90f
+#define FOLLOW_X_KD             0.40f
 // Asymmetric steering: the inner wheel never drops below FOLLOW_CRUISE_PWM;
 // only the outer wheel gets a small positive boost to re-center the tag.
-#define FOLLOW_X_MAX_BOOST      45          // outer-wheel PWM delta cap
+#define FOLLOW_X_MAX_BOOST      90          // outer-wheel PWM delta cap
+// Only follow tags with learned ID strictly greater than 1.
+#define FOLLOW_MIN_ID           1
 
 // ---- Route ---------------------------------------------------------
 #define MAX_ROUTE_STEPS         15          // fixed-size, no malloc

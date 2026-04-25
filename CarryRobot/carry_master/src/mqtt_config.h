@@ -178,7 +178,14 @@ inline bool reconnect() {
 }
 
 inline void loop() {
-    if (!s_mqtt.connected()) reconnect();
+    if (!s_mqtt.connected()) {
+        // NFR-07: retry every 3 s on disconnection
+        static uint32_t tRetry = 0;
+        if (millis() - tRetry >= 3000) {
+            tRetry = millis();
+            reconnect();
+        }
+    }
     s_mqtt.loop();
 }
 

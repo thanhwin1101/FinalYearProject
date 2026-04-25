@@ -25,7 +25,11 @@ public:
     void drive(int16_t speedL, int16_t speedR) {
         _sideDrive(PIN_MOT_LEFT_IN1,  PIN_MOT_LEFT_IN2,  PIN_MOT_LEFT_EN,  speedL);
         _sideDrive(PIN_MOT_RIGHT_IN1, PIN_MOT_RIGHT_IN2, PIN_MOT_RIGHT_EN, speedR);
+        _lastL = speedL; _lastR = speedR;
     }
+
+    int16_t lastL() const { return _lastL; }
+    int16_t lastR() const { return _lastR; }
 
     void forward(uint8_t pwm = DRIVE_CRUISE_PWM)  { drive( pwm,  pwm); }
     void backward(uint8_t pwm = DRIVE_CRUISE_PWM) { drive(-pwm, -pwm); }
@@ -60,6 +64,8 @@ public:
     }
 
 private:
+    int16_t _lastL = 0;
+    int16_t _lastR = 0;
     static void _sideDrive(uint8_t in1, uint8_t in2, uint8_t en, int16_t s) {
         if (s >  DRIVE_MAX_PWM) s =  DRIVE_MAX_PWM;
         if (s < -DRIVE_MAX_PWM) s = -DRIVE_MAX_PWM;

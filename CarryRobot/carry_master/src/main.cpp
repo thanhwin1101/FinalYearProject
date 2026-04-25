@@ -246,6 +246,27 @@ static void beepService() {
         digitalWrite(PIN_BUZZER, LOW);
         g_arriveBeepUntil = 0;
     }
+    // ---- Continuous obstacle alarm (non-blocking 200/200 ms pattern) ----
+    // Beeps only while the obstacle flag is set. Forced OFF the instant
+    // the obstacle clears so the buzzer never "sticks" after the path is
+    // free again.
+    static bool     obstHigh = false;
+    static uint32_t obstNext = 0;
+    static bool     obstWas  = false;
+    const bool obstNow = g_obstacleActive && (g_state != Sys::FOLLOW_ACTIVE);
+    if (obstNow) {
+        if (!obstWas) { obstHigh = false; obstNext = 0; }   // fresh trip
+        if (millis() >= obstNext) {
+            obstHigh = !obstHigh;
+            digitalWrite(PIN_BUZZER, obstHigh ? HIGH : LOW);
+            obstNext = millis() + 200;
+        }
+    } else if (obstWas) {
+        // Obstacle just cleared → force buzzer OFF immediately.
+        obstHigh = false;
+        digitalWrite(PIN_BUZZER, LOW);
+    }
+    obstWas = obstNow;
 }
 
 // --------------------------------------------------------------------
@@ -622,7 +643,9 @@ static void onUartFrame(const String& cmd, const String& data) {
         }
         g_obstacleActive = blocked;
         MqttCfg::publishObstacle(blocked);
-        if (blocked) beep(80);   // single short beep on trip
+        // Buzzer is driven continuously by beepService() while
+        // g_obstacleActive is true; no blocking beep here.
+        if (!blocked) digitalWrite(PIN_BUZZER, LOW);
         return;
     }
     if (cmd == "CP_REACHED") {

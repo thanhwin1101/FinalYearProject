@@ -79,6 +79,7 @@ enum class Phase {
 static Mode  g_mode  = Mode::AUTO;
 static Phase g_phase = Phase::IDLE;
 static bool  g_obstacle = false;
+static int16_t g_lastSr05Cm = 999;  // last raw SR05 reading (debug telemetry)
 static String g_lastHandledCp;     // FSM-level dedup: prevents re-processing same CP
 static int16_t g_lastTagId = -1;   // last HuskyLens tag ID seen (-1 if none)
 
@@ -113,12 +114,32 @@ static char   g_rxBuf[UART_FRAME_MAX];
 static size_t g_rxLen   = 0;
 static bool   g_inFrame = false;
 
+// --------------------------------------------------------------------
+//  CRC8 (poly 0x07, init 0x00)  —  NFR-06: silent-drop corrupt frames
+// --------------------------------------------------------------------
+static uint8_t crc8_compute(const char* data, size_t len) {
+    uint8_t crc = 0x00;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint8_t)data[i];
+        for (uint8_t b = 0; b < 8; b++)
+            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : (crc << 1);
+    }
+    return crc;
+}
+
 static inline void uartSend(const char* cmd) {
-    UART_ESP.print('<'); UART_ESP.print(cmd); UART_ESP.print('>');
+    uint8_t crc = crc8_compute(cmd, strlen(cmd));
+    char hex[3]; snprintf(hex, sizeof(hex), "%02X", crc);
+    UART_ESP.print('<'); UART_ESP.print(cmd);
+    UART_ESP.print('|'); UART_ESP.print(hex); UART_ESP.print('>');
 }
 static inline void uartSend(const char* cmd, const char* data) {
-    UART_ESP.print('<'); UART_ESP.print(cmd); UART_ESP.print(':');
-    UART_ESP.print(data); UART_ESP.print('>');
+    char content[UART_FRAME_MAX];
+    snprintf(content, sizeof(content), "%s:%s", cmd, data);
+    uint8_t crc = crc8_compute(content, strlen(content));
+    char hex[3]; snprintf(hex, sizeof(hex), "%02X", crc);
+    UART_ESP.print('<'); UART_ESP.print(content);
+    UART_ESP.print('|'); UART_ESP.print(hex); UART_ESP.print('>');
 }
 static inline void uartSend(const char* cmd, const String& data) {
     uartSend(cmd, data.c_str());
@@ -134,6 +155,13 @@ static void uartPoll() {
         if (c == '>' && g_inFrame) {
             g_inFrame = false;
             g_rxBuf[g_rxLen] = '\0';
+            // CRC8 validation (NFR-06): last '|XX' must match
+            char* pipe = strrchr(g_rxBuf, '|');
+            if (!pipe || strlen(pipe + 1) != 2) { g_rxLen = 0; continue; }
+            uint8_t rxCrc   = (uint8_t)strtol(pipe + 1, nullptr, 16);
+            uint8_t calcCrc = crc8_compute(g_rxBuf, (size_t)(pipe - g_rxBuf));
+            if (rxCrc != calcCrc) { g_rxLen = 0; continue; } // silently drop
+            *pipe = '\0';  // strip CRC suffix
             char* sep = strchr(g_rxBuf, ':');
             if (sep) { *sep = '\0'; onFrame(g_rxBuf, sep + 1); }
             else     { onFrame(g_rxBuf, "");                    }
@@ -221,10 +249,22 @@ static void obstacleService() {
     static uint32_t tNext = 0;
     static uint8_t  hits  = 0;          // consecutive in-range samples
     static uint8_t  miss  = 0;          // consecutive clear samples
+    static uint32_t tDbg  = 0;
     if (millis() < tNext) return;
     tNext = millis() + 60;
 
     long cm = sr05ReadCm();
+    g_lastSr05Cm = (int16_t)cm;
+
+    // Throttled debug — every 500 ms send raw cm + state to master so the
+    // serial monitor shows whether the SR05 is actually clearing.
+    if (millis() >= tDbg) {
+        tDbg = millis() + 500;
+        char buf[40];
+        snprintf(buf, sizeof(buf), "cm=%ld obs=%d hits=%u miss=%u",
+                 cm, g_obstacle ? 1 : 0, (unsigned)hits, (unsigned)miss);
+        uartSend("SR05", buf);
+    }
 
     if (!g_obstacle) {
         if (cm > 0 && cm < SR05_STOP_CM) {
@@ -239,7 +279,15 @@ static void obstacleService() {
             hits = 0;
         }
     } else {
-        if (cm >= SR05_RESUME_CM) {
+        // A full pulseIn timeout (cm == 999) means "no echo at all" →
+        // strongly indicates the path is clear. Treat it as an immediate
+        // resume so a brief sensor glitch can't keep the buzzer stuck.
+        if (cm >= 999) {
+            g_obstacle = false;
+            uartSend("OBSTACLE", "0");
+            miss = 0;
+            hits = 0;
+        } else if (cm >= SR05_RESUME_CM) {
             if (++miss >= 2) {           // 2-strike → resume
                 g_obstacle = false;
                 uartSend("OBSTACLE", "0");
@@ -535,16 +583,15 @@ static void heartbeatService() {
     static uint32_t tNext = 0;
     if (millis() < tNext) return;
     tNext = millis() + 2000;
-    char buf[80];
+    char buf[110];
     snprintf(buf, sizeof(buf),
-             "m=%s,p=%s,husky=%c,tag=%d,obs=%d,lrn=%c,av=%c,n=%d",
+             "m=%s,p=%s,husky=%c,tag=%d,obs=%d,L=%d,R=%d,sr=%d",
              modeShort(g_mode), phaseShort(g_phase),
              g_follow.ready() ? 'Y' : 'N',
              (int)g_lastTagId,
              g_obstacle ? 1 : 0,
-             g_follow.lastLearned() ? 'Y' : 'N',
-             g_follow.lastAvail()   ? 'Y' : 'N',
-             g_follow.lastBlockCnt());
+             (int)g_drive.lastL(), (int)g_drive.lastR(),
+             (int)g_lastSr05Cm);
     uartSend("HB", buf);
 }
 

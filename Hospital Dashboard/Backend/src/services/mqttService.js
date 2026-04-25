@@ -81,7 +81,7 @@ export function initMqtt() {
     username: MQTT_USER,
     password: MQTT_PASS,
     clean: true,
-    reconnectPeriod: 5000,
+    reconnectPeriod: 3000,  // NFR-07: retry every 3 s
     connectTimeout: 10000,
   });
 
