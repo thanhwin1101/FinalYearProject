@@ -126,8 +126,9 @@ router.get('/carry/status', async (_req, res) => {
     const now = Date.now();
 
     const all = await Robot.find({ type: 'carry' }).lean();
+    const online = all.filter(r => r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ROBOT_ONLINE_TIMEOUT_MS));
 
-    const robotIds = all.map(r => r.robotId);
+    const robotIds = online.map(r => r.robotId);
     const activeMissions = await TransportMission.find({
       carryRobotId: { $in: robotIds },
       returnedAt: null,
@@ -138,14 +139,35 @@ router.get('/carry/status', async (_req, res) => {
       missionMap[m.carryRobotId] = m;
     }
 
-    const robots = all.map(r => {
-      const isOnline = !!(r.lastSeenAt && (now - new Date(r.lastSeenAt).getTime() <= ROBOT_ONLINE_TIMEOUT_MS));
+    // Nếu robot có status='busy' nhưng thực tế KHÔNG còn active mission
+    // (DB còn sót transportData cũ), tự dọn ngay → status=idle,
+    // transportData={}. Tránh dashboard hiện busy mãi.
+    const stalePatches = [];
+    for (const r of online) {
+      const hasMission = !!missionMap[r.robotId];
+      const isStale = !hasMission && (r.status === 'busy' || (r.transportData && (r.transportData.destination || r.transportData.carryingItem)));
+      if (isStale) {
+        stalePatches.push(
+          Robot.updateOne(
+            { robotId: r.robotId },
+            { $set: { status: 'idle', transportData: {} } }
+          )
+        );
+        r.status = 'idle';
+        r.transportData = {};
+      }
+    }
+    if (stalePatches.length) await Promise.all(stalePatches);
+
+    const robots = online.map(r => {
       const mission = missionMap[r.robotId];
 
       const location = r.currentLocation?.room ||
         (typeof r.currentLocation === 'string' ? r.currentLocation : '—');
 
-      const destination = (mission && ['pending', 'en_route', 'arrived', 'completed'].includes(mission.status))
+      // Destination chỉ khi CÓ mission thật sự — tránh hiển thị stale
+      // transportData.destination sau khi đã hủy mission.
+      const destination = mission
         ? (mission.bedId || mission.destinationNodeId || '—')
         : '—';
 
@@ -154,11 +176,10 @@ router.get('/carry/status', async (_req, res) => {
       return {
         robotId: r.robotId,
         name: r.name,
-        status: isOnline ? r.status : 'offline',
-        statusText: isOnline ? r.status : 'offline',
-        isOnline,
+        status: r.status,
+        statusText: r.status,
         batteryLevel: r.batteryLevel ?? 0,
-        carrying: r.transportData?.carryingItem || '—',
+        carrying: mission ? (r.transportData?.carryingItem || '—') : '—',
         destination,
         location,
         currentNode,
@@ -166,13 +187,11 @@ router.get('/carry/status', async (_req, res) => {
       };
     });
 
-    const online = robots.filter(x => x.isOnline);
     const summary = {
       total: robots.length,
-      online: online.length,
-      idle: online.filter(x => x.status === 'idle').length,
-      busy: online.filter(x => x.status === 'busy').length,
-      charging: online.filter(x => x.status === 'charging').length,
+      idle: robots.filter(x => x.status === 'idle').length,
+      busy: robots.filter(x => x.status === 'busy').length,
+      charging: robots.filter(x => x.status === 'charging').length,
     };
 
     res.json({ summary, robots });
@@ -274,13 +293,6 @@ router.post('/:id/command', async (req, res) => {
       'resume',
       'tune_turn',
       'test_dashboard',
-      'direct_vel',
-      'servo_set',
-      'servo_center',
-      'servo_sweep',
-      'radar_scan',
-      'wheel_set',
-      'radar_speed',
     ];
     if (!ALLOWED_COMMANDS.includes(command)) {
       return res.status(400).json({ error: `Unknown command: ${command}` });

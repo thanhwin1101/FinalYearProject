@@ -1,0 +1,7 @@
+# CARRY ROBOT - GLOBAL CURSOR RULES
+
+1. **KIẾN TRÚC MASTER-SLAVE:** Dự án gồm ESP32 (Master - Quản lý WiFi/MQTT/Logic cấp cao) và STM32 (Slave - Lái xe Tank, đọc NFC, ToF, Line, Husky). Giao tiếp qua UART Custom CRC8.
+2. **CẤM BLOCKING CODE:** Tuyệt đối KHÔNG sử dụng hàm `delay()` trong các luồng State Machine (Motor, Loop, UART). Bắt buộc dùng `millis()` timer.
+3. **KHÔNG ĐỔI HARDWARE:** Tuyệt đối không tự ý thay đổi số chân GPIO, không tự ý thay đổi thư viện trong file `config.h`.
+4. **SỐ LƯỢNG MODE:** Hệ thống CHỈ có 2 Mode hoạt động chính: `MODE_AUTO` và `MODE_FOLLOW`. Mọi hành vi tìm lại line (Recovery) phải là một sub-state bên trong `MODE_AUTO`.
+5. **NGÔN NGỮ:** Code viết bằng C++ (Arduino Framework). Log/Debug in ra bằng tiếng Anh. Giải thích cho user bằng tiếng Việt.

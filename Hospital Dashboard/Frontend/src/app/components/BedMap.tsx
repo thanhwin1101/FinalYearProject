@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Patient } from '@/app/types/patient';
 import { Robot } from '@/app/types/robot';
 import { User, Bot } from 'lucide-react';
@@ -17,9 +16,25 @@ interface BedInfo {
 }
 
 export function BedMap({ patients, robots, onBedClick, selectedBedId }: BedMapProps) {
+  const normalizeBedId = (value?: string) => String(value || '').trim().toUpperCase();
+
+  const isRobotActive = (robot: Robot) => {
+    const backendStatus = String(robot.backendStatus || '').toLowerCase();
+    if (backendStatus) {
+      return backendStatus !== 'idle' && backendStatus !== 'charging' && backendStatus !== 'offline';
+    }
+    return robot.status !== 'Idle';
+  };
+
   const getBedInfo = (bedId: string): BedInfo => {
     const patient = patients.find(p => p.roomBedId === bedId);
-    const hasRobot = robots.some(r => r.currentLocation === bedId || r.destination === bedId);
+    const normalizedBedId = normalizeBedId(bedId);
+    const hasRobot = robots.some((robot) => {
+      if (!isRobotActive(robot)) return false;
+      const currentLocation = normalizeBedId(robot.currentLocation);
+      const destination = normalizeBedId(robot.destination);
+      return currentLocation === normalizedBedId || destination === normalizedBedId;
+    });
     return { id: bedId, patient, hasRobot };
   };
 

@@ -1,10 +1,11 @@
-import { useState, useCallback } from 'react';
-import { Battery, Send, XCircle, User, MapPin, Navigation, History, List } from 'lucide-react';
+﻿import { useState } from 'react';
+import { Battery, Send, XCircle, User, MapPin, Navigation, History, List, PersonStanding } from 'lucide-react';
 import { Button } from '@/app/components/ui/button';
 import { Badge } from '@/app/components/ui/badge';
-import { Robot } from '@/app/types/robot';
+import { Robot, RobotStatus } from '@/app/types/robot';
 import { Patient } from '@/app/types/patient';
 import { DeliveryHistoryTable, DeliveryHistory } from './RobotHistory';
+
 
 interface RobotManagementProps {
   robots: Robot[];
@@ -29,20 +30,13 @@ export function RobotManagement({
 
   const carryRobots = robots.filter(r => r.type === 'Carry');
 
-  const getStatusBadge = (robot: Robot) => {
-    if (!robot.isOnline) {
-      return <Badge className="bg-gray-100 text-gray-500">Offline</Badge>;
-    }
-    const s = robot.backendStatus;
-    if (s === 'busy' || s === 'follow')
-      return <Badge className="bg-yellow-100 text-yellow-800">Busy</Badge>;
-    if (s === 'low_battery')
-      return <Badge className="bg-orange-100 text-orange-800">Low Battery</Badge>;
-    if (s === 'charging')
-      return <Badge className="bg-blue-100 text-blue-800">Charging</Badge>;
-    if (s === 'maintenance' || s === 'error')
-      return <Badge className="bg-red-100 text-red-800">Error</Badge>;
-    return <Badge className="bg-green-100 text-green-800">Online</Badge>;
+  const getStatusBadge = (status: RobotStatus) => {
+    const isBusy = status !== 'Idle';
+    return (
+      <Badge className={isBusy ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}>
+        {isBusy ? 'Busy' : 'Idle'}
+      </Badge>
+    );
   };
 
   const getBatteryColor = (level: number) => {
@@ -134,7 +128,7 @@ export function RobotManagement({
           <div className="bg-green-600 text-white px-4 py-2 font-semibold flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-xl">🤖</span>
-              AGV_Hospital
+              Carry Robot
             </div>
             <div className="flex gap-1">
               <button
@@ -180,18 +174,14 @@ export function RobotManagement({
                   {carryRobots.length > 0 ? (
                     carryRobots.map((robot, index) => {
                       const isFollow = (robot as any).robotMode === 'follow';
-                      const offline = !robot.isOnline;
                       return (
-                        <tr key={robot.id} className={`border-t hover:bg-gray-50 ${offline ? 'opacity-50' : ''}`}>
+                        <tr key={robot.id} className="border-t hover:bg-gray-50">
                           <td className="px-2 py-2 text-gray-900">{index + 1}</td>
-                          <td className="px-2 py-2 font-medium text-gray-900">
-                            {robot.name}
-                            {offline && <span className="ml-1 text-xs text-gray-400">(offline)</span>}
-                          </td>
+                          <td className="px-2 py-2 font-medium text-gray-900">{robot.name}</td>
                           <td className="px-2 py-2">
-                            {!offline && isFollow
+                            {isFollow
                               ? <Badge className="bg-purple-100 text-purple-800">Follow</Badge>
-                              : getStatusBadge(robot)
+                              : getStatusBadge(robot.status)
                             }
                           </td>
                           <td className="px-2 py-2 text-gray-900">
@@ -219,13 +209,10 @@ export function RobotManagement({
                             </div>
                           </td>
                           <td className="px-2 py-2">
-                            {offline ? (
-                              <span className="text-xs text-gray-400">—</span>
-                            ) : isFollow ? (
-                              <Badge className="bg-purple-100 text-purple-800">Follow</Badge>
-                            ) : (
-                              <Badge className="bg-green-100 text-green-800">Auto</Badge>
-                            )}
+                            {isFollow
+                              ? <Badge className="bg-purple-100 text-purple-800 flex items-center gap-1 w-fit"><PersonStanding className="w-3 h-3 inline mr-1" />Follow Mode</Badge>
+                              : <Badge className="bg-green-100 text-green-800 flex items-center gap-1 w-fit">Auto Mode</Badge>
+                            }
                           </td>
                         </tr>
                       );
@@ -233,7 +220,7 @@ export function RobotManagement({
                   ) : (
                     <tr>
                       <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
-                        No AGV_Hospital registered
+                        No Carry Robot available
                       </td>
                     </tr>
                   )}

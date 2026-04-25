@@ -7,7 +7,7 @@ import { LOW_BATTERY_PCT, DEFAULT_MAP_ID } from '../utils/constants.js';
 import {
   ROUTE_TEST_MED_TO_R4M3,
   checkpointIdToName,
-  routeReturnMedFrom,
+  uidStringToCpId,
 } from '../utils/checkpointIds.js';
 
 // Lazy import to avoid circular dependency (robots route imports from here indirectly)
@@ -127,14 +127,62 @@ export function initMqtt() {
 async function handleCarryStackTopic(topic, message) {
   const robotId = STACK_ROBOT_ID;
   const ts = Date.now();
+  const nowDate = new Date(ts);
   try {
     const payload = JSON.parse(message.toString());
     if (topic === STACK_RETURN_TOPIC) {
       const cp = Number(payload.checkpoint_id);
       if (!Number.isFinite(cp)) return;
-      const ids = routeReturnMedFrom(cp);
-      console.log(`[Stack] return_request checkpoint_id=${cp} → return_route`, ids);
-      publishCarryStackJson({ action: 'return_route', ids });
+      const cpName = checkpointIdToName(cp) || null;
+
+      // Prefer full return route (with actions) from active mission.
+      // If current cp is in that route, send suffix from cp -> ... -> MED.
+      const active = await TransportMission.findOne({
+        carryRobotId: robotId,
+        returnedAt: null,
+        status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
+      }).sort({ updatedAt: -1, createdAt: -1 }).lean();
+
+      let routeToSend = [];
+      if (active?.returnRoute?.length) {
+        const points = active.returnRoute;
+        let startIdx = -1;
+        for (let i = 0; i < points.length; i++) {
+          const p = points[i];
+          const pCp = p?.rfidUid ? uidStringToCpId(p.rfidUid)
+                                 : (Number.isFinite(p?.id) ? Number(p.id) : null);
+          if (pCp === cp) { startIdx = i; break; }
+        }
+        if (startIdx >= 0) {
+          routeToSend = points.slice(startIdx);
+        } else {
+          routeToSend = points.slice();
+        }
+      }
+
+      // Fallback: compute route from current checkpoint name to MED.
+      if (routeToSend.length < 2 && cpName) {
+        const calc = await calculateReturnRouteFromNode(DEFAULT_MAP_ID, cpName, null);
+        if (calc?.length) routeToSend = calc;
+      }
+
+      if (routeToSend.length >= 2) {
+        const routePayload = routeToSend.map((p) => ({
+          id: (p?.rfidUid ? uidStringToCpId(p.rfidUid) : undefined),
+          rfidUid: p?.rfidUid || undefined,
+          action: p?.action || 'F',
+          nodeId: p?.nodeId || undefined
+        }));
+        console.log(`[Stack] return_request cp=${cp} (${cpName || '?'}) -> full return_route n=${routePayload.length}`);
+        publishCarryStackJson({ action: 'return_route', route: routePayload });
+      } else {
+        // Last-resort minimal path (kept only as emergency fallback).
+        const medCp = uidStringToCpId('45:54:80:83');
+        const ids = (Number.isFinite(medCp) && cp !== medCp) ? [cp, medCp] : [cp];
+        console.warn(`[Stack] return_request fallback minimal route`, ids);
+        publishCarryStackJson({ action: 'return_route', ids });
+      }
+
       if (_emitRobotPosition) {
         _emitRobotPosition({
           robotId,
@@ -153,6 +201,7 @@ async function handleCarryStackTopic(topic, message) {
     let cpRaw = null;
     let batteryLevel = null;
     let status = null;            // null = don't change status
+    let robotMode = null;         // null = don't change robotMode
     let stackLogLine = '';
 
     if (evt === 'checkpoint' && typeof payload.id === 'number') {
@@ -161,31 +210,128 @@ async function handleCarryStackTopic(topic, message) {
       currentNodeId = checkpointIdToName(cpRaw) || `CP${cpRaw}`;
       status = 'busy';
       stackLogLine = `checkpoint → ${currentNodeId} (${cpRaw})`;
+
+      // Defensive: if no active mission exists (all deleted / already
+      // returned) then robot isn't really on a job → force idle and
+      // push a cancel so the robot stops wherever it is.
+      const active = await TransportMission.findOne({
+        carryRobotId: robotId,
+        returnedAt: null,
+        status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
+      }).lean();
+      if (!active) {
+        status = 'idle';
+        stackLogLine += ' (no active mission → force idle + cancel)';
+        console.warn(`[Stack] orphan checkpoint from ${robotId} — no active mission, sending cancel`);
+        publishCarryStackJson({ action: 'cancel' });
+      }
     } else if (evt === 'idle_scan' && typeof payload.id === 'number') {
       cpRaw = payload.id;
       lastStackCpByRobot.set(robotId, cpRaw);
       currentNodeId = checkpointIdToName(cpRaw) || `CP${cpRaw}`;
       status = 'idle';
       stackLogLine = `idle scan → ${currentNodeId} (${cpRaw})`;
+
+      // Cleanup: robot about to MED + có mission cancelled chưa returnedAt
+      // → đánh dấu returnedAt để thoát trạng thái active.
+      if (currentNodeId === 'MED') {
+        const cancelledOpen = await TransportMission.findOne({
+          carryRobotId: robotId,
+          returnedAt: null,
+          status: 'cancelled'
+        });
+        if (cancelledOpen) {
+          await TransportMission.updateOne(
+            { missionId: cancelledOpen.missionId, returnedAt: null },
+            { $set: { returnedAt: new Date(), updatedAt: new Date() } }
+          );
+          stackLogLine += ` (cleanup cancelled ${cancelledOpen.missionId})`;
+        }
+      }
+    } else if (evt === 'arrived_destination') {
+      const missionId = String(payload.mission || '').trim();
+      if (missionId) {
+        await TransportMission.updateOne(
+          { missionId, carryRobotId: robotId, returnedAt: null },
+          {
+            $set: {
+              status: 'arrived',
+              arrivedAt: nowDate,
+              updatedAt: nowDate,
+            }
+          }
+        );
+      }
+      stackLogLine = `arrived_destination${missionId ? ` ${missionId}` : ''}`;
     } else if (evt === 'mission_done') {
       status = 'idle';
-      stackLogLine = 'mission_done';
+      const missionId = String(payload.mission || '').trim();
+      if (missionId) {
+        await TransportMission.updateOne(
+          { missionId, carryRobotId: robotId, returnedAt: null },
+          {
+            $set: {
+              status: 'completed',
+              completedAt: nowDate,
+              returnedAt: nowDate,
+              currentNodeId: 'MED',
+              updatedAt: nowDate,
+            },
+            $push: {
+              notes: { timestamp: nowDate, text: 'AGV mission_done from carry stack' }
+            }
+          }
+        );
+      } else {
+        // Fallback: if firmware didn't include mission id, close the latest open mission.
+        await TransportMission.findOneAndUpdate(
+          {
+            carryRobotId: robotId,
+            returnedAt: null,
+            status: { $in: ['pending', 'en_route', 'arrived', 'completed', 'cancelled'] }
+          },
+          {
+            $set: {
+              status: 'completed',
+              completedAt: nowDate,
+              returnedAt: nowDate,
+              currentNodeId: 'MED',
+              updatedAt: nowDate,
+            },
+            $push: {
+              notes: { timestamp: nowDate, text: 'AGV mission_done from carry stack' }
+            }
+          },
+          { sort: { updatedAt: -1, createdAt: -1 } }
+        );
+      }
+      stackLogLine = `mission_done${missionId ? ` ${missionId}` : ''}`;
     } else if (evt === 'battery' && typeof payload.pct === 'number') {
       batteryLevel = payload.pct;
       stackLogLine = `battery ${batteryLevel}%`;
-    } else if (evt === 'telemetry' && payload.debug) {
-      const d = payload.debug;
-      if (typeof d.battEsp === 'number') batteryLevel = d.battEsp;
-      // Extract idle/busy from run flag + mode
-      if (d.mode === 'auto') {
-        status = d.run ? 'busy' : 'idle';
-      } else if (d.mode === 'follow' || d.mode === 'recovery') {
-        status = 'busy';
-      }
-      stackLogLine = `telemetry mode=${d.mode} run=${d.run} batt=${d.battEsp}%`;
     } else if (evt === 'cancelled') {
       status = 'idle';
       stackLogLine = 'cancelled';
+    } else if (evt === 'mode') {
+      // ESP32 master tells us when it switches AUTO ↔ FOLLOW so the
+      // dashboard Mode column reflects the physical state of the robot.
+      const m = String(payload.mode || '').toLowerCase();
+      if (m === 'follow') {
+        status = 'follow';
+        robotMode = 'follow';
+        stackLogLine = 'mode → follow';
+      } else {
+        robotMode = 'auto';
+        // Back to auto: only force idle if the robot really is idle —
+        // a running mission may still be in progress.
+        const active = await TransportMission.findOne({
+          carryRobotId: robotId,
+          returnedAt: null,
+          status: { $in: ['pending', 'en_route', 'arrived'] }
+        }).lean();
+        status = active ? 'busy' : 'idle';
+        stackLogLine = `mode → auto (${status})`;
+      }
     } else if (evt === 'route_accept') {
       status = 'busy';
       stackLogLine = `route_accept n=${payload.n}`;
@@ -233,12 +379,21 @@ async function handleCarryStackTopic(topic, message) {
     const update = {
       robotId,
       type: 'carry',
-      name: robotId,
-      lastSeenAt: new Date(ts),
+      name: robotId,                  // hiển thị "AGV-01" thay vì "Carry Stack"
+      lastSeenAt: nowDate,
     };
-    if (status != null) update.status = status === 'idle' ? 'idle' : 'busy';
+    if (status != null) update.status = (status === 'idle' || status === 'follow') ? status : 'busy';
+    if (robotMode != null) update.robotMode = robotMode;
     if (batteryLevel != null) update.batteryLevel = batteryLevel;
     if (nodeForUi) update.currentLocation = { room: nodeForUi };
+
+    if (evt === 'mission_done') {
+      update.transportData = {};
+      update.currentMissionId = null;
+      if (!update.currentLocation) {
+        update.currentLocation = { room: 'MED' };
+      }
+    }
 
     await Robot.updateOne({ robotId }, { $set: update }, { upsert: true });
   } catch (e) {
@@ -854,9 +1009,16 @@ export function publishMissionAssign(robotId, mission) {
     outboundRoute: mission.outboundRoute,
     returnRoute: mission.returnRoute,
   };
-  const payload = JSON.stringify({ mission: missionObj });
 
   const topic = `hospital/robots/${robotId}/mission/assign`;
+  const payload = JSON.stringify({ mission: missionObj });
+
+  // Bridge: ESP32 carry stack chỉ subscribe `carry/robot/cmd` — publish
+  // cùng JSON lên topic bridge để robot nhận được route ngay.
+  if (robotId === STACK_ROBOT_ID) {
+    publishCarryStackJson({ mission: missionObj });
+  }
+
   client.publish(topic, payload, { qos: 1, retain: false }, (err) => {
     if (err) {
       console.error(`[MQTT] Publish error to ${topic}:`, err.message);
@@ -864,17 +1026,6 @@ export function publishMissionAssign(robotId, mission) {
       console.log(`[MQTT] Mission ${mission.missionId} assigned to ${robotId}`);
     }
   });
-
-  // Bridge to carry stack ESP32 — it subscribes to STACK_CMD_TOPIC, not the new topic
-  if (robotId === STACK_ROBOT_ID) {
-    client.publish(STACK_CMD_TOPIC, payload, { qos: 1, retain: false }, (err) => {
-      if (err) {
-        console.error(`[MQTT] Carry stack bridge publish error:`, err.message);
-      } else {
-        console.log(`[MQTT] Mission ${mission.missionId} bridged → ${STACK_CMD_TOPIC}`);
-      }
-    });
-  }
 
   return true;
 }
@@ -896,13 +1047,12 @@ export function publishMissionCancel(robotId, missionId) {
     }
   });
 
-  // Bridge to carry stack ESP32 — subscribes to STACK_CMD_TOPIC only
+  // Bridge: carry stack ESP32 chỉ subscribe `carry/robot/cmd` — nên
+  // phải publish thêm một frame `{"action":"cancel"}` ở đó để robot
+  // nhận được lệnh hủy (nếu không nó sẽ chạy tiếp, spam checkpoint
+  // và dashboard tự ghi lại status=busy).
   if (robotId === STACK_ROBOT_ID) {
-    const stackPayload = JSON.stringify({ action: 'cancel' });
-    client.publish(STACK_CMD_TOPIC, stackPayload, { qos: 1, retain: false }, (err) => {
-      if (err) console.error('[MQTT] Cancel bridge error:', err.message);
-      else console.log(`[MQTT] Cancel bridged → ${STACK_CMD_TOPIC}`);
-    });
+    publishCarryStackJson({ action: 'cancel', missionId });
   }
 
   return true;

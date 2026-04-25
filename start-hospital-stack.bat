@@ -68,12 +68,12 @@ echo ========================================
 echo   Done. Services status:
 echo   MQTT Broker : tcp/1883
 echo   Backend API : http://localhost:3000
-echo   Frontend dev: http://localhost:5173  (npm run dev - hot reload)
+echo   Frontend dev: http://localhost:5173  (default open, hot reload)
 echo   Dashboard   : http://localhost:3000  (SPA from Frontend/dist via Backend)
 echo ========================================
 echo.
 echo Browser will open in 3 seconds...
 timeout /t 3 /nobreak >nul
-start http://localhost:3000
+start http://localhost:5173
 
 endlocal
