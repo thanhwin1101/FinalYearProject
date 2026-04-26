@@ -33,15 +33,25 @@
 // ====================================================================
 #define PIN_MOT_LEFT_IN1    PA0
 #define PIN_MOT_LEFT_IN2    PA1
-#define PIN_MOT_LEFT_EN     PA8         // ENA  (TIM1_CH1  hardware PWM)
-#define PIN_MOT_RIGHT_IN1   PB12        // direction  (plain GPIO)
-#define PIN_MOT_RIGHT_IN2   PB13        // direction  (plain GPIO)
-#define PIN_MOT_RIGHT_EN    PB1         // ENB  (TIM3_CH4  hardware PWM)
+// PWM moved OFF PA8: TIM1_CH1 was 1 pin away from SPI1 MOSI/MISO and
+// coupled noise into PN532 reads. PB6 = TIM4_CH1, fully isolated from
+// SPI1 (port A) and from the PN532 CS line.
+#define PIN_MOT_LEFT_EN     PB6         // ENA  (TIM4_CH1  hardware PWM)
+// Right side IN1/IN2 swapped (PB13/PB12 instead of PB12/PB13) so that
+// "forward" PWM in the firmware actually drives the right wheels
+// forward. Without this, the right pair was wired reversed and the
+// robot would spin clockwise on a "drive(170,170)" command.
+#define PIN_MOT_RIGHT_IN1   PB13        // direction  (plain GPIO) [swapped]
+#define PIN_MOT_RIGHT_IN2   PB12        // direction  (plain GPIO) [swapped]
+// PWM moved OFF PB1: it was the immediate neighbour of PB0 (PN532 CS)
+// and every PWM edge glitched the CS line, killing SPI transactions.
+// PB7 = TIM4_CH2, far from CS PB5 and from SPI1 lines.
+#define PIN_MOT_RIGHT_EN    PB7         // ENB  (TIM4_CH2  hardware PWM)
 
 // ---- Motor tuning --------------------------------------------------
 #define DRIVE_MAX_PWM       255
 #define DRIVE_CRUISE_PWM    190
-#define DRIVE_TURN_PWM      180
+#define DRIVE_TURN_PWM      170
 #define DRIVE_BRAKE_PWM     180
 #define DRIVE_BRAKE_MS      80
 #define TURN_180_MS         1900        // calibrate on real chassis
@@ -52,7 +62,7 @@
 #define PIN_LINE_R          PA4
 
 // ---- Line-follow PD gains -----------------------------------------
-#define LF_BASE_PWM         170         // Auto cruise speed (3-eye PD)
+#define LF_BASE_PWM         100         // Auto cruise speed (3-eye PD) - slow enough for PN532 to read tags reliably
 #define LF_KP               70
 #define LF_KD               55
 
@@ -62,8 +72,13 @@
 #define PN532_SCK           PA5
 #define PN532_MISO          PA6
 #define PN532_MOSI          PA7
-#define PN532_SS            PB0         // CS (free pin)
-#define NFC_POLL_TIMEOUT_MS 80
+// CS pin history:
+//   PB0  – sat next to PB1 (motor-right PWM) → glitched every edge.
+//   PB5  – sat next to PB6 (motor-left PWM after the move)  → same EMI.
+//   PB14 – far from PB6/PB7 PWM and from SPI1 (port A). No timer
+//          neighbour. Confirmed clean.
+#define PN532_SS            PB14        // CS – isolated from motor PWM
+#define NFC_POLL_TIMEOUT_MS 40
 #define NFC_REPEAT_MS       700
 
 // ---- Servo (Y-axis pitch) -----------------------------------------
@@ -109,8 +124,8 @@
 // Speed-by-area: cruise PWM scales linearly with the tag’s on-screen
 // area percentage. Tag tiny (far)  → FOLLOW_PWM_MAX (sprint to catch up).
 // Tag near STOP threshold        → FOLLOW_PWM_MIN (gentle approach).
-#define FOLLOW_PWM_MIN          150
-#define FOLLOW_PWM_MAX          180
+#define FOLLOW_PWM_MIN          100
+#define FOLLOW_PWM_MAX          200
 #define FOLLOW_CRUISE_PWM       FOLLOW_PWM_MIN  // legacy floor
 #define FOLLOW_X_KP             0.90f
 #define FOLLOW_X_KD             0.40f

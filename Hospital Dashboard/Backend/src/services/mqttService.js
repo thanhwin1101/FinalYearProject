@@ -35,6 +35,8 @@ const STACK_RETURN_TOPIC = process.env.MQTT_STACK_RETURN_TOPIC || 'robot/return_
 export const STACK_ROBOT_ID = process.env.MQTT_STACK_ROBOT_ID || 'AGV-01';
 
 const lastStackCpByRobot = new Map();
+const lastLowBatteryAlertAt = new Map();   // robotId -> ts (ms) of last carry_low_battery alert
+const LOW_BATTERY_ALERT_COOLDOWN_MS = 5 * 60 * 1000;   // 5 min between repeats
 
 let client = null;
 let connected = false;
@@ -173,6 +175,10 @@ async function handleCarryStackTopic(topic, message) {
           action: p?.action || 'F',
           nodeId: p?.nodeId || undefined
         }));
+        // Enforce: last checkpoint always 'B' (180° turn at destination).
+        if (routePayload.length) {
+          routePayload[routePayload.length - 1].action = 'B';
+        }
         console.log(`[Stack] return_request cp=${cp} (${cpName || '?'}) -> full return_route n=${routePayload.length}`);
         publishCarryStackJson({ action: 'return_route', route: routePayload });
       } else {
@@ -250,8 +256,9 @@ async function handleCarryStackTopic(topic, message) {
       }
     } else if (evt === 'arrived_destination') {
       const missionId = String(payload.mission || '').trim();
+      let arrivedMission = null;
       if (missionId) {
-        await TransportMission.updateOne(
+        arrivedMission = await TransportMission.findOneAndUpdate(
           { missionId, carryRobotId: robotId, returnedAt: null },
           {
             $set: {
@@ -259,10 +266,68 @@ async function handleCarryStackTopic(topic, message) {
               arrivedAt: nowDate,
               updatedAt: nowDate,
             }
-          }
-        );
+          },
+          { new: true }
+        ).lean();
+      }
+      // Raise "robot đã đến nơi" alert so the dashboard pops a toast
+      // / row in the alert panel — message includes bed + patient.
+      try {
+        const bedId = arrivedMission?.bedId || '';
+        const patientName = arrivedMission?.patientName || '';
+        const parts = ['Robot đã đến nơi'];
+        if (bedId) parts.push(`giường ${bedId}`);
+        if (patientName) parts.push(`(BN: ${patientName})`);
+        await Alert.create({
+          type: 'mission_arrived',
+          level: 'low',
+          robotId,
+          missionId: missionId || undefined,
+          message: parts.join(' '),
+          data: { bedId, patientName }
+        });
+      } catch (e) {
+        console.warn('[MQTT] mission_arrived alert insert failed:', e?.message || e);
       }
       stackLogLine = `arrived_destination${missionId ? ` ${missionId}` : ''}`;
+    } else if (evt === 'return_started') {
+      // Operator pressed the button at the bed → robot is leaving back
+      // toward MED. Update mission + raise an alert.
+      const missionId = String(payload.mission || '').trim();
+      let m = null;
+      if (missionId) {
+        m = await TransportMission.findOneAndUpdate(
+          { missionId, carryRobotId: robotId, returnedAt: null },
+          {
+            $set: {
+              status: 'en_route',
+              returnStartedAt: nowDate,
+              updatedAt: nowDate,
+            }
+          },
+          { new: true }
+        ).lean();
+      }
+      try {
+        const bedId = m?.bedId || '';
+        const patientName = m?.patientName || '';
+        const parts = [];
+        if (patientName) parts.push(`BN ${patientName}`);
+        if (bedId) parts.push(`ở giường ${bedId}`);
+        const subject = parts.length ? parts.join(' ') : 'Bệnh nhân';
+        await Alert.create({
+          type: 'mission_return_started',
+          level: 'low',
+          robotId,
+          missionId: missionId || undefined,
+          message: `${subject} đã nhận đồ, robot đang bắt đầu quay về`,
+          data: { bedId, patientName }
+        });
+      } catch (e) {
+        console.warn('[MQTT] return_started alert insert failed:', e?.message || e);
+      }
+      status = 'busy';
+      stackLogLine = `return_started${missionId ? ` ${missionId}` : ''}`;
     } else if (evt === 'mission_done') {
       status = 'idle';
       const missionId = String(payload.mission || '').trim();
@@ -351,6 +416,32 @@ async function handleCarryStackTopic(topic, message) {
       stackLogLine = `relay ${payload.which} → ${payload.on ? 'ON' : 'OFF'}`;
     } else if (evt === 'relay_resume') {
       stackLogLine = 'relay: auto (theo chế độ robot)';
+    } else if (evt === 'hello') {
+      // Carry master heartbeat (every ~3s). May carry:
+      //   - location: last-scanned CP id (string nodeId, e.g. "MED")
+      //   - mode:     "auto" | "follow" | "follow_recovery" | "idle"
+      //   - pct:      battery percent 0..100 (omitted if no sensor)
+      // Update robotMode + batteryLevel + currentNodeId so the dashboard
+      // reflects live state without waiting for a checkpoint event.
+      if (typeof payload.location === 'string' && payload.location.trim()) {
+        currentNodeId = payload.location.trim();
+      }
+      if (typeof payload.pct === 'number' && Number.isFinite(payload.pct)) {
+        batteryLevel = Math.max(0, Math.min(100, payload.pct));
+      }
+      const m = String(payload.mode || '').toLowerCase();
+      if (m === 'follow' || m === 'follow_recovery') {
+        robotMode = 'follow';
+      } else if (m === 'auto') {
+        robotMode = 'auto';
+      } else if (m === 'idle') {
+        robotMode = 'auto';
+      }
+      const parts = [`hello fw=${payload.fw || '?'}`];
+      if (currentNodeId) parts.push(`loc=${currentNodeId}`);
+      if (m)             parts.push(`mode=${m}`);
+      if (batteryLevel != null) parts.push(`batt=${batteryLevel}%`);
+      stackLogLine = parts.join(' ');
     } else {
       stackLogLine = evt ? String(evt) : JSON.stringify(payload).slice(0, 120);
     }
@@ -382,7 +473,34 @@ async function handleCarryStackTopic(topic, message) {
       name: robotId,                  // hiển thị "AGV-01" thay vì "Carry Stack"
       lastSeenAt: nowDate,
     };
-    if (status != null) update.status = (status === 'idle' || status === 'follow') ? status : 'busy';
+    // Low-battery enforcement (web compares pct <= LOW_BATTERY_PCT and
+    // forces status = 'low_battery' so /missions/delivery rejects new
+    // jobs (filter is status:'idle')). Also raise an Alert (rate-limited
+    // to one every LOW_BATTERY_ALERT_COOLDOWN_MS to avoid spam).
+    const lowBatt = (batteryLevel != null && batteryLevel <= LOW_BATTERY_PCT);
+    if (lowBatt) {
+      status = 'low_battery';
+      const lastTs = lastLowBatteryAlertAt.get(robotId) || 0;
+      if (Date.now() - lastTs > LOW_BATTERY_ALERT_COOLDOWN_MS) {
+        lastLowBatteryAlertAt.set(robotId, Date.now());
+        try {
+          await Alert.create({
+            type: 'carry_low_battery',
+            level: 'high',
+            robotId,
+            message: `Carry robot ${robotId} pin thấp (${batteryLevel}%) — tạm dừng nhận mission mới`,
+            data: { batteryLevel }
+          });
+        } catch (e) {
+          console.warn('[MQTT] low-battery alert insert failed:', e?.message || e);
+        }
+      }
+    }
+    if (status != null) {
+      update.status = (status === 'idle' || status === 'follow' || status === 'low_battery')
+        ? status
+        : 'busy';
+    }
     if (robotMode != null) update.robotMode = robotMode;
     if (batteryLevel != null) update.batteryLevel = batteryLevel;
     if (nodeForUi) update.currentLocation = { room: nodeForUi };
@@ -966,8 +1084,11 @@ function computeReturnActions(routePoints, startNode) {
   }
 
   if (routePoints.length > 0) {
-    routePoints[routePoints.length - 1].action = 'F';
-    routePoints[routePoints.length - 1].actions = [];
+    // Final destination always gets a 180° turn ("B") — the robot must
+    // physically face back the way it came so it is ready for the next
+    // outbound leg without an extra in-place spin.
+    routePoints[routePoints.length - 1].action = 'B';
+    routePoints[routePoints.length - 1].actions = ['B'];
   }
 }
 

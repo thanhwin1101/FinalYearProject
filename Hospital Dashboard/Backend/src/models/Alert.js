@@ -12,6 +12,9 @@ const alertSchema = new mongoose.Schema(
         'mission_rejected_low_battery',
         'rescue_required',
         'route_deviation',
+        'mission_arrived',
+        'mission_return_started',
+        'mission_completed',
         'info'
       ]
     },

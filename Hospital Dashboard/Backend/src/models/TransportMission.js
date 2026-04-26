@@ -65,6 +65,7 @@ const transportMissionSchema = new mongoose.Schema({
   assignedAt: { type: Date },
   startedAt: { type: Date },
   arrivedAt: { type: Date },
+  returnStartedAt: { type: Date },
   completedAt: { type: Date },
 
   returnedAt: { type: Date, default: null },

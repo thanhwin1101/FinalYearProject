@@ -202,7 +202,9 @@ function computeActionsMap(nodeIds, ctx, phase) {
 
     m.set(from, normalized);
   }
-  m.set(nodeIds[nodeIds.length - 1], []);
+  // Final destination always gets a 180° turn ("B") so the robot ends
+  // up facing the way it came from — ready for the return trip.
+  m.set(nodeIds[nodeIds.length - 1], ['B']);
   return m;
 }
 
@@ -386,10 +388,12 @@ router.get('/carry/next', async (req, res) => {
     const backRaw = (m.returnRoute && m.returnRoute.length) ? m.returnRoute : (outRaw.slice().reverse());
 
     const normalizePoint = (p) => {
-      const legacy = (p.action === 'L' || p.action === 'R') ? p.action : 'F';
+      const legacy = (p.action === 'L' || p.action === 'R' || p.action === 'B')
+        ? p.action
+        : 'F';
       const actions = (Array.isArray(p.actions) && p.actions.length)
-        ? p.actions.filter(x => x === 'F' || x === 'L' || x === 'R')
-        : (legacy === 'L' || legacy === 'R') ? [legacy, 'F'] : ['F'];
+        ? p.actions.filter(x => x === 'F' || x === 'L' || x === 'R' || x === 'B')
+        : (legacy === 'L' || legacy === 'R' || legacy === 'B') ? [legacy] : ['F'];
 
       return {
         nodeId: p.nodeId,

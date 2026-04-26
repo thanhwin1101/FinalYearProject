@@ -20,6 +20,13 @@ interface DeliveryHistoryTableProps {
   loading?: boolean;
 }
 
+function formatDestination(dest: string): string {
+  const m = /^R(\d+)([MO])(\d+)$/i.exec(dest.trim());
+  if (!m) return dest;
+  const side = m[2].toUpperCase() === 'M' ? 'Middle' : 'Outside';
+  return `Room ${m[1]} / Bed ${m[2].toUpperCase()}${m[3]}`;
+}
+
 export function DeliveryHistoryTable({ history, loading }: DeliveryHistoryTableProps) {
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -81,7 +88,7 @@ export function DeliveryHistoryTable({ history, loading }: DeliveryHistoryTableP
                 <td className="px-2 py-2">
                   <div className="flex items-center gap-1">
                     <MapPin className="w-3 h-3 text-gray-400" />
-                    <span className="text-gray-900 text-xs">{item.destination}</span>
+                    <span className="text-gray-900 text-xs">{formatDestination(item.destination)}</span>
                   </div>
                 </td>
                 <td className="px-2 py-2 text-gray-600 text-xs">

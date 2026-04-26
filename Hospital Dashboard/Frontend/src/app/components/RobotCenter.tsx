@@ -48,7 +48,7 @@ export function RobotCenter({ patients, robots, onBedClick, onCancelTask, onSend
           robotName: item.robotName,
           patientId: item.patientId,
           patientName: item.patientName,
-          destination: item.destinationRoom,
+          destination: item.destinationBed || item.destinationRoom || '',
           duration: item.duration,
           status: item.status as 'completed' | 'failed' | 'cancelled',
         })));

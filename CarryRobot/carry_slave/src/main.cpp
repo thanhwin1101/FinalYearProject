@@ -79,9 +79,24 @@ enum class Phase {
 static Mode  g_mode  = Mode::AUTO;
 static Phase g_phase = Phase::IDLE;
 static bool  g_obstacle = false;
+static bool  g_turning  = false;   // TRUE while a tankTurn*() is in progress —
+                                   // obstacleService must NOT stop() the motors,
+                                   // because a turn command MUST complete
+                                   // (even if SR05 sees an obstacle mid-spin).
 static int16_t g_lastSr05Cm = 999;  // last raw SR05 reading (debug telemetry)
 static String g_lastHandledCp;     // FSM-level dedup: prevents re-processing same CP
+static String g_lastTurnTag;       // tag where the LAST 90/180° turn was performed.
+                                   // Same-tag scans without an intervening different
+                                   // tag will NOT spin again — fixes "robot keeps
+                                   // turning 180° forever when parked on MED".
 static int16_t g_lastTagId = -1;   // last HuskyLens tag ID seen (-1 if none)
+
+// While TRUE, autoDriveTick() drives both wheels straight at LF_BASE_PWM
+// instead of using the line-PD output. Set on every START transition and
+// cleared the first time the center line sensor sees the line. Prevents
+// pivot-in-place when the robot is parked on MED (where a side sensor
+// may flicker on the marker edge while the center is off the line).
+static bool g_creepStraightUntilLine = false;
 
 // --------------------------------------------------------------------
 //  Mode / phase short-name helpers (for <HB> heartbeat to master)
@@ -132,6 +147,8 @@ static inline void uartSend(const char* cmd) {
     char hex[3]; snprintf(hex, sizeof(hex), "%02X", crc);
     UART_ESP.print('<'); UART_ESP.print(cmd);
     UART_ESP.print('|'); UART_ESP.print(hex); UART_ESP.print('>');
+    // Mirror to USB serial monitor for live debugging.
+    Serial.print("[UART->] "); Serial.println(cmd);
 }
 static inline void uartSend(const char* cmd, const char* data) {
     char content[UART_FRAME_MAX];
@@ -140,6 +157,8 @@ static inline void uartSend(const char* cmd, const char* data) {
     char hex[3]; snprintf(hex, sizeof(hex), "%02X", crc);
     UART_ESP.print('<'); UART_ESP.print(content);
     UART_ESP.print('|'); UART_ESP.print(hex); UART_ESP.print('>');
+    // Mirror to USB serial monitor.
+    Serial.print("[UART->] "); Serial.println(content);
 }
 static inline void uartSend(const char* cmd, const String& data) {
     uartSend(cmd, data.c_str());
@@ -229,7 +248,10 @@ static long sr05ReadCmOnce() {
     digitalWrite(PIN_SR05_TRIG, LOW);  delayMicroseconds(3);
     digitalWrite(PIN_SR05_TRIG, HIGH); delayMicroseconds(10);
     digitalWrite(PIN_SR05_TRIG, LOW);
-    long us = pulseIn(PIN_SR05_ECHO, HIGH, 30000);   // 30 ms ≈ 5 m
+    // Timeout giảm từ 30 ms xuống 3 ms (~50 cm). Robot chỉ cần phản
+    // ứng vật cản gần (SR05_STOP_CM = 20 cm, SR05_RESUME_CM = 40 cm).
+    // 30 ms × 3 lần = 90 ms blocking khi trống → bỏ tag PN532.
+    long us = pulseIn(PIN_SR05_ECHO, HIGH, 3000);    // ~50 cm max
     if (us == 0) return 999;                          // timeout = far
     long cm = us / 58;
     if (cm < 2 || cm > 400) return 999;               // out-of-range
@@ -270,7 +292,10 @@ static void obstacleService() {
         if (cm > 0 && cm < SR05_STOP_CM) {
             if (++hits >= 2) {           // 2-strike → trip
                 g_obstacle = true;
-                g_drive.stop();
+                // Do NOT cut motor PWM if a turn is in progress —
+                // a turn command must run to completion regardless
+                // of obstacle state.
+                if (!g_turning) g_drive.stop();
                 uartSend("OBSTACLE", "1");
                 hits = 0;
                 miss = 0;
@@ -303,20 +328,45 @@ static void obstacleService() {
 // --------------------------------------------------------------------
 //  Auto-mode helpers
 // --------------------------------------------------------------------
-static void executeAction(char action) {
+// Run the route-step action at this CP. We dedup turn-actions by tag so
+// the robot will not spin 90/180° more than once at the same physical
+// checkpoint — even if the master re-issues a route that starts on the
+// same tag we are currently parked on.
+static void executeAction(char action, const String& tag) {
     g_drive.brake();
+    const bool sameTagAsLastTurn = (tag.length() && tag == g_lastTurnTag);
     switch (action) {
-        case 'L': g_drive.tankTurn90Left();  break;
-        case 'R': g_drive.tankTurn90Right(); break;
-        case 'B': g_drive.tankTurn180();     break;   // backend first-step return
+        case 'L':
+            if (!sameTagAsLastTurn) { g_drive.tankTurn90Left();  g_lastTurnTag = tag; }
+            else Serial.println("[AUTO] skip 90L (already turned at this tag)");
+            break;
+        case 'R':
+            if (!sameTagAsLastTurn) { g_drive.tankTurn90Right(); g_lastTurnTag = tag; }
+            else Serial.println("[AUTO] skip 90R (already turned at this tag)");
+            break;
+        case 'B':
+            if (!sameTagAsLastTurn) { g_drive.tankTurn180();     g_lastTurnTag = tag; }
+            else Serial.println("[AUTO] skip 180 (already turned at this tag)");
+            break;
         case 'F':
         default:  /* nothing – just pass the CP */ break;
     }
 }
 
-static void finishRoute(const char* cpId) {
+static void finishRoute(const char* cpId, char action) {
     g_drive.brake();
-    g_drive.tankTurn180();                                 // spec: 180° at end
+    const String tag(cpId);
+    // Only the final-step action 'B' produces a 180° turn at the
+    // destination. 'F' (or any other) means stop only — the turn is
+    // an explicit instruction from the route, not a default behaviour.
+    if (action == 'B') {
+        if (tag.length() && tag == g_lastTurnTag) {
+            Serial.println("[AUTO] finishRoute: skip 180 (already turned at this tag)");
+        } else {
+            g_drive.tankTurn180();
+            g_lastTurnTag = tag;
+        }
+    }
     if (strcmp(cpId, MED_ID) == 0) uartSend("DONE",    cpId);
     else                            uartSend("ARRIVED", cpId);
     g_phase    = Phase::IDLE;
@@ -326,14 +376,56 @@ static void finishRoute(const char* cpId) {
 
 // Called once per detected tag while in Auto / TRACK_TO_CP mode
 static void handleCheckpoint(const String& scannedId) {
-    // FSM-level dedup: prevents same CP re-firing during a 90/180 turn.
-    // NFC_REPEAT_MS (700 ms) < TURN_90_MS (900 ms) / TURN_180_MS (1900 ms),
-    // so without this guard the same tag fires WRONG_CP mid-turn.
-    if (scannedId == g_lastHandledCp) return;
-    g_lastHandledCp = scannedId;
-
     // Sentinel "?XXXX" means a tag was read but its UID is not in the map.
     const bool unknown = scannedId.length() && scannedId[0] == '?';
+
+    // BRAKE FIRST whenever PN532 catches any tag while a route is
+    // executing. This prevents the robot from rolling past the CP pad
+    // before the FSM has a chance to dispatch the action (turn / stop).
+    // It also gives PN532 a stable read window so subsequent polls can
+    // confirm the UID. IDLE/ROUTE_LOADED phases must NOT brake here
+    // (the robot is already stopped — emitting a brake would be noise).
+    if (g_phase == Phase::EXECUTING       ||
+        g_phase == Phase::CANCEL_SEARCH_CP||
+        g_phase == Phase::FREC_TRACK_TO_CP) {
+        g_drive.brake();
+    }
+
+    // Always echo the raw poll() hit upstream so the master serial
+    // monitor / telnet can show every tag the PN532 sees — even ones
+    // dropped by the EXECUTING dedup guard. Format:
+    //   SCAN:<id>,phase=<n>,exp=<expectedId>
+    {
+        const Checkpoint* exp = expectedCp();
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s,phase=%d,exp=%s",
+                 scannedId.c_str(),
+                 (int)g_phase,
+                 exp ? exp->id : "-");
+        uartSend("SCAN", buf);
+    }
+
+    // FSM-level dedup is ONLY needed for EXECUTING / CANCEL_SEARCH_CP /
+    // FREC_TRACK_TO_CP — those run a 90/180 turn after handling a CP and
+    // NFC_REPEAT_MS (700 ms) is shorter than TURN_*_MS, so without this
+    // guard the same tag would fire WRONG_CP mid-turn.
+    //
+    // For IDLE / ROUTE_LOADED we WANT every fresh poll() return to update
+    // the master's "current location" — even if it's the same tag we saw
+    // last time (e.g. user picked the robot up and put it back down on
+    // the same CP, or a previous IDLE_SCAN frame was lost in transit).
+    const bool needDedup =
+        (g_phase == Phase::EXECUTING       ||
+         g_phase == Phase::CANCEL_SEARCH_CP||
+         g_phase == Phase::FREC_TRACK_TO_CP);
+    if (needDedup && scannedId == g_lastHandledCp) return;
+    g_lastHandledCp = scannedId;
+    // Robot has physically moved to a new tag → forget the "already
+    // turned here" guard so a future visit back to this tag will turn.
+    if (scannedId != g_lastTurnTag) {
+        // (do not clear g_lastTurnTag here — only update it inside
+        //  executeAction()/finishRoute() when an actual turn fires.)
+    }
 
     if (g_phase == Phase::EXECUTING) {
         const Checkpoint* exp = expectedCp();
@@ -342,7 +434,10 @@ static void handleCheckpoint(const String& scannedId) {
         if (unknown) {
             // Off-route tag: brake, 180°, escalate to master.
             g_drive.brake();
-            g_drive.tankTurn180();
+            if (scannedId != g_lastTurnTag) {
+                g_drive.tankTurn180();
+                g_lastTurnTag = scannedId;
+            }
             uartSend("WRONG_CP", scannedId);
             g_phase = Phase::IDLE; g_routeN = 0; g_routeIdx = 0;
             return;
@@ -352,16 +447,19 @@ static void handleCheckpoint(const String& scannedId) {
             char act  = exp->action;
             bool last = (g_routeIdx == g_routeN - 1);
             if (last) {
-                finishRoute(exp->id);
+                finishRoute(exp->id, act);
             } else {
                 uartSend("CP_REACHED", exp->id);
-                executeAction(act);
+                executeAction(act, scannedId);
                 g_routeIdx++;
             }
         } else {
             // Wrong CP encountered: brake, 180° turn, ask master.
             g_drive.brake();
-            g_drive.tankTurn180();
+            if (scannedId != g_lastTurnTag) {
+                g_drive.tankTurn180();
+                g_lastTurnTag = scannedId;
+            }
             uartSend("WRONG_CP", scannedId);
             g_phase    = Phase::IDLE;
             g_routeN   = 0;
@@ -375,8 +473,44 @@ static void handleCheckpoint(const String& scannedId) {
         // Stop at any tag — including unknown ones (the master will
         // resolve via the web recovery route).
         g_drive.brake();
+        // Cancel always happens mid-outbound, so the robot is facing
+        // AWAY from MED. The recovery route from the backend assumes
+        // the robot is already pointing back along the corridor, so
+        // perform a 180° turn here before reporting the CP. Skip if we
+        // already turned at this exact tag (prevents double-spin if
+        // the tag is re-scanned by accident).
+        if (g_phase == Phase::CANCEL_SEARCH_CP && scannedId != g_lastTurnTag) {
+            g_drive.tankTurn180();
+            g_lastTurnTag = scannedId;
+        }
         uartSend("CP_REACHED", scannedId);
         g_phase = Phase::IDLE;
+        return;
+    }
+
+    // IDLE / ROUTE_LOADED: passive scan — let master know the robot's
+    // current physical location (used by web dashboard + OLED), but do
+    // not start any route execution.
+    //
+    // Throttle: emit every time the tag *changes*, otherwise at most
+    // once every IDLE_SCAN_RESEND_MS so a same-tag reading keeps the
+    // web in sync (in case an earlier frame was dropped) without
+    // flooding MQTT.
+    static String   sLastEmitId;
+    static uint32_t sLastEmitMs = 0;
+    constexpr uint32_t IDLE_SCAN_RESEND_MS = 5000;
+    if (!unknown) {
+        const uint32_t now = millis();
+        const bool changed  = (scannedId != sLastEmitId);
+        const bool overdue  = (now - sLastEmitMs >= IDLE_SCAN_RESEND_MS);
+        if (changed || overdue) {
+            uartSend("IDLE_SCAN", scannedId);
+            Serial.print("[RFID] IDLE_SCAN -> "); Serial.println(scannedId);
+            sLastEmitId = scannedId;
+            sLastEmitMs = now;
+        }
+    } else {
+        Serial.print("[RFID] unknown UID seen (idle): "); Serial.println(scannedId);
     }
 }
 
@@ -467,8 +601,56 @@ static void onFrame(const char* cmd, const char* data) {
         resetCheckpointDedup();        // clear dedup on new route load
         g_phase = (g_routeN > 0) ? Phase::ROUTE_LOADED : Phase::IDLE;
     } else if (strcmp(cmd, "START") == 0) {
-        if (g_phase == Phase::ROUTE_LOADED && g_routeN > 0)
+        if (g_phase == Phase::ROUTE_LOADED && g_routeN > 0) {
+            // Clear the dedup sentinel right before we begin executing.
+            // While IDLE/ROUTE_LOADED, every IDLE_SCAN we sent set
+            // g_lastHandledCp = <current tag>. If we don't reset it now,
+            // the very first scan in EXECUTING (which is the SAME tag
+            // we are physically parked on, == expected[0].id) would be
+            // dropped by the EXECUTING dedup guard. The route then
+            // never advances past idx 0, and autoDriveTick() spins the
+            // wheels forever via the line PD because we are sitting
+            // partially on the MED marker.
+            resetCheckpointDedup();
+            // Also forget the last-turn tag — a new mission must be
+            // free to perform the route's first explicit turn even if
+            // it happens at the same physical CP we previously turned
+            // at (e.g. MED with 'B' at the end of the previous return).
+            g_lastTurnTag = "";
+            // Re-initialise PN532 SPI — some boards lose state after
+            // motor PWM (TIM1 on PA8) activates and SPI reads start
+            // failing silently. A fresh SAMConfig fixes that.
+            Serial.println("[START] PN532 reinit before EXEC...");
+            bool pnOk = g_rfid.reinit();
+            Serial.print("[START] PN532 reinit: "); Serial.println(pnOk ? "OK" : "FAIL");
+            // Force an initial "creep straight" segment until the
+            // center line sensor catches the painted line. Stops the
+            // robot from pivoting in place at MED if a side sensor
+            // sees the marker edge while the center sees nothing.
+            g_creepStraightUntilLine = true;
             g_phase = Phase::EXECUTING;
+
+            // Auto-confirm the start CP. The robot is physically parked
+            // on route[0] when a mission begins, so we don't need the
+            // PN532 to re-read that tag — it often misses because the
+            // robot starts driving before another 700ms repeat-window
+            // elapses, leaving expectedCp=route[0] forever and making
+            // the next physical tag (route[1]) look like a WRONG_CP.
+            // Instead, fire CP_REACHED:route[0] now and advance idx so
+            // EXECUTING begins with expected = route[1].
+            const Checkpoint& first = g_route[0];
+            // Treat scanning of route[0]'s id as already "handled" so
+            // a stray PN532 hit on the start tag doesn't double-fire.
+            g_lastHandledCp = String(first.id);
+            if (g_routeN == 1) {
+                // Single-CP route: starting CP is also the destination.
+                finishRoute(first.id, first.action);
+            } else {
+                uartSend("CP_REACHED", first.id);
+                executeAction(first.action, String(first.id));
+                g_routeIdx = 1;
+            }
+        }
     } else if (strcmp(cmd, "CANCEL_MISSION") == 0) {
         if (g_phase == Phase::EXECUTING)
             g_phase = Phase::CANCEL_SEARCH_CP;
@@ -484,6 +666,22 @@ static void autoDriveTick() {
                      g_phase == Phase::CANCEL_SEARCH_CP ||
                      g_phase == Phase::FREC_TRACK_TO_CP);
     if (!tracking) { g_drive.stop(); return; }
+
+    // Creep straight at LF_BASE_PWM until the center line sensor first
+    // sees the line. Without this, autoDriveTick() at MED would feed
+    // the PD's stale ±2 error and one wheel would stall while the other
+    // ran at full speed → pivot in place forever.
+    if (g_creepStraightUntilLine) {
+        const bool centerOnLine =
+            (digitalRead(PIN_LINE_C) == LOW);
+        if (centerOnLine) {
+            g_creepStraightUntilLine = false;
+        } else {
+            g_drive.drive(LF_BASE_PWM, LF_BASE_PWM);
+            return;
+        }
+    }
+
     int l, r; g_line.step(l, r);
     g_drive.drive(l, r);
 }
@@ -581,17 +779,44 @@ void loop() {
 // --------------------------------------------------------------------
 static void heartbeatService() {
     static uint32_t tNext = 0;
+    const bool fast = (g_phase == Phase::EXECUTING ||
+                       g_phase == Phase::CANCEL_SEARCH_CP ||
+                       g_phase == Phase::FREC_TRACK_TO_CP);
     if (millis() < tNext) return;
-    tNext = millis() + 2000;
-    char buf[110];
+    tNext = millis() + (fast ? 500 : 2000);
+
+    // Snapshot 3-eye line sensor (LOW = sees black line) so the ESP32
+    // serial monitor can spot "sensor stuck on/off" issues that cause
+    // the line PD to pivot the robot in place.
+    const int lL = (digitalRead(PIN_LINE_L) == LOW) ? 1 : 0;
+    const int lC = (digitalRead(PIN_LINE_C) == LOW) ? 1 : 0;
+    const int lR = (digitalRead(PIN_LINE_R) == LOW) ? 1 : 0;
+
+    // Truncate dedup/turn tags to a few chars to keep the frame short.
+    char dedup[8] = {0};
+    char turn[8]  = {0};
+    strncpy(dedup, g_lastHandledCp.c_str(), sizeof(dedup) - 1);
+    strncpy(turn,  g_lastTurnTag.c_str(),  sizeof(turn)  - 1);
+
+    char buf[200];
     snprintf(buf, sizeof(buf),
-             "m=%s,p=%s,husky=%c,tag=%d,obs=%d,L=%d,R=%d,sr=%d",
+             "m=%s,p=%s,husky=%c,tag=%d,obs=%d,L=%d,R=%d,sr=%d,"
+             "line=%d%d%d,idx=%u/%u,dedup=%s,turn=%s,creep=%d,"
+             "pn=%lu/%lu/%lu",
              modeShort(g_mode), phaseShort(g_phase),
              g_follow.ready() ? 'Y' : 'N',
              (int)g_lastTagId,
              g_obstacle ? 1 : 0,
              (int)g_drive.lastL(), (int)g_drive.lastR(),
-             (int)g_lastSr05Cm);
+             (int)g_lastSr05Cm,
+             lL, lC, lR,
+             (unsigned)g_routeIdx, (unsigned)g_routeN,
+             dedup[0] ? dedup : "-",
+             turn[0]  ? turn  : "-",
+             g_creepStraightUntilLine ? 1 : 0,
+             (unsigned long)g_rfid.pollOk(),
+             (unsigned long)g_rfid.pollEmpty(),
+             (unsigned long)g_rfid.pollTotal());
     uartSend("HB", buf);
 }
 

@@ -34,6 +34,17 @@
 #include <WiFiManager.h>
 #include <Preferences.h>
 #include <ArduinoOTA.h>
+#include <TelnetSpy.h>
+
+// --------------------------------------------------------------------
+//  TelnetSpy — mirrors USB Serial onto TCP port 23 once Wi-Fi is up.
+//  Connect from PC with:   telnet AGV-01.local
+//  or:  pio device monitor --port socket://AGV-01.local:23 -b 115200
+//  After the redirect macro below, every Serial.print() in this firmware
+//  goes to BOTH the USB cable AND any connected telnet client.
+// --------------------------------------------------------------------
+TelnetSpy SerialAndTelnet;
+#define Serial SerialAndTelnet
 
 #include "config.h"
 #include "checkpoint_map.h"
@@ -75,14 +86,56 @@ enum class Sys {
 static Sys       g_state = Sys::BOOTING;
 static uint32_t  g_arriveBeepUntil = 0;
 
+// ---- Battery monitor state ----------------------------------------
+// Moving average of raw ADC mV samples (calibrated readout). Updated
+// by batteryService() every BATT_SAMPLE_MS. g_battPct is the live %.
+static int       g_battPct = -1;       // -1 = no valid sample yet
+static uint16_t  g_battMv  = 0;        // last filtered pack voltage (mV)
+
+static void batteryService() {
+    static uint32_t tNext = 0;
+    static uint16_t buf[BATT_FILTER_TAPS] = {0};
+    static uint8_t  bufIdx = 0;
+    static uint8_t  bufFill = 0;
+    if (millis() < tNext) return;
+    tNext = millis() + BATT_SAMPLE_MS;
+
+    // Calibrated millivolts at the ADC pin (eFuse-corrected on ESP32).
+    const uint32_t adc_mv = analogReadMilliVolts(PIN_BATT_ADC);
+    const uint16_t pack_mv = (uint16_t)(adc_mv * BATT_DIVIDER);
+
+    buf[bufIdx] = pack_mv;
+    bufIdx = (bufIdx + 1) % BATT_FILTER_TAPS;
+    if (bufFill < BATT_FILTER_TAPS) bufFill++;
+
+    uint32_t sum = 0;
+    for (uint8_t i = 0; i < bufFill; i++) sum += buf[i];
+    g_battMv = (uint16_t)(sum / bufFill);
+
+    int pct;
+    if      (g_battMv <= BATT_VMIN_MV) pct = 0;
+    else if (g_battMv >= BATT_VMAX_MV) pct = 100;
+    else pct = (int)(((uint32_t)(g_battMv - BATT_VMIN_MV) * 100UL) /
+                     (BATT_VMAX_MV - BATT_VMIN_MV));
+    g_battPct = pct;
+}
+
+
 // Pending route legs (compact format ready for slave: "id,act|...")
 static String    g_pendingOutbound;
 static String    g_pendingReturn;
 
 // Mission tracking (assigned by backend on carry/robot/cmd → mission)
 static String    g_missionId;
-static String    g_lastNodeId;       // last CP reported by slave ("next CP" display)
+static String    g_lastNodeId;       // last CP reported by slave (= robot's current location)
 static uint16_t  g_lastCpId = 0;     // numeric form for backend events
+
+// Active route progress for OLED "Next CP" display.
+// g_activeRoute is the compact route string currently being executed by the
+// slave (outbound leg, return leg, or recovery leg). g_routeIdx points to the
+// NEXT checkpoint the slave should scan (0 = first step).
+static String    g_activeRoute;
+static uint8_t   g_routeIdx = 0;
 
 // OLED display context (populated from MQTT mission + UART frames)
 static String    g_patientName;      // "David King"
@@ -164,6 +217,7 @@ static void persistMqttHostFromParam() {
 // --------------------------------------------------------------------
 static constexpr uint16_t RELAY_SETTLE_MS = 400;   // PN532 ~200, HuskyLens ~500
 static const char* stateName(Sys s);   // fwd-decl so [RELAY] log can print state name
+static String routeStepIdAt(const String& compact, int idx);   // fwd-decl for OLED draw
 static const char* relayPolicyForState(Sys s);  // fwd-decl: "AUTO"/"FOLLOW"/"REC"
 
 // Wrap raw relay writes so every transition is logged with caller hint.
@@ -307,19 +361,30 @@ static const char* stateName(Sys s) {
 // ---- small drawing primitives -------------------------------------
 static inline bool blink500() { return (millis() / 500) & 1; }
 
+// Status-bar header (top 0..15 px). Title left-aligned in 7x14 bold,
+// battery percent right-aligned in small 6x10 ("[NN%]" or "[--%]").
+// Pulls battery from g_battPct (set by batteryService()).
 static void drawHeaderBar(const char* text, bool inverted) {
-    // Header occupies y=0..14 (15px). Bold 14px centered.
-    g_oled.setFont(u8g2_font_7x14B_tr);
-    const int w = g_oled.getUTF8Width(text);
-    const int x = (128 - w) / 2;
+    char battStr[8];
+    if (g_battPct >= 0) snprintf(battStr, sizeof(battStr), "[%d%%]", g_battPct);
+    else                snprintf(battStr, sizeof(battStr), "[--%%]");
+
     if (inverted) {
         g_oled.setDrawColor(1);
         g_oled.drawBox(0, 0, 128, 15);
         g_oled.setDrawColor(0);
-        g_oled.drawStr(x, 12, text);
+        g_oled.setFont(u8g2_font_7x14B_tr);
+        g_oled.drawStr(2, 12, text);
+        g_oled.setFont(u8g2_font_6x10_tr);
+        int bw = g_oled.getUTF8Width(battStr);
+        g_oled.drawStr(128 - bw - 2, 11, battStr);
         g_oled.setDrawColor(1);
     } else {
-        g_oled.drawStr(x, 12, text);
+        g_oled.setFont(u8g2_font_7x14B_tr);
+        g_oled.drawStr(2, 12, text);
+        g_oled.setFont(u8g2_font_6x10_tr);
+        int bw = g_oled.getUTF8Width(battStr);
+        g_oled.drawStr(128 - bw - 2, 11, battStr);
     }
     g_oled.drawHLine(0, 16, 128);
 }
@@ -378,11 +443,11 @@ static void drawApPortal() {
 }
 
 static void drawAutoIdle() {
-    drawHeaderBar("AUTO MODE", true);
+    drawHeaderBar("AUTO_IDLE", true);
     String loc = "Loc: ";
     loc += g_lastNodeId.length() ? g_lastNodeId : String(START_CHECKPOINT);
     drawLine6x10(30, clip(loc, 21).c_str());
-    drawLine6x10(42, "Status:   READY");
+    drawLine6x10(42, "Stat: READY");
     drawLine6x10(62, "Waiting for Web...");
 }
 
@@ -392,26 +457,35 @@ static void drawWaitStartOutbound() {
     drawLine6x10(30, clip(pt, 21).c_str());
     String to = "To: "; to += g_destLabel.length() ? g_destLabel : "—";
     drawLine6x10(42, clip(to, 21).c_str());
-    if (blink500()) drawLine6x10(62, ">> [SHORT PRESS] GO");
+    if (blink500()) drawLine6x10(62, ">> [PRESS] TO START");
 }
 
 static void drawExecutingMoving() {
-    drawHeaderBar("MOVING... >>", false);
+    drawHeaderBar("MOVING >>", false);
     String dst = "Dest: "; dst += g_destLabel.length() ? g_destLabel : "—";
     drawLine6x10(30, clip(dst, 21).c_str());
-    String nx  = "Next CP: "; nx += g_lastNodeId.length() ? g_lastNodeId : "—";
+    // g_routeIdx points at the CP just reached (0 = start point itself,
+    // i.e. MED when route was just loaded). The next physical CP the
+    // robot is heading to is therefore idx+1.
+    String next = routeStepIdAt(g_activeRoute, g_routeIdx + 1);
+    if (!next.length()) next = routeStepIdAt(g_activeRoute, g_routeIdx);
+    if (!next.length()) next = g_lastNodeId;
+    String nx  = "Next: "; nx += next.length() ? next : "—";
     drawLine6x10(42, clip(nx, 21).c_str());
-    drawLine6x10(62, "[Line Tracking ON]");
+    // Current physical location (last CP scanned by PN532). Useful to
+    // verify the robot is actually reading tags during route execution.
+    String loc = "Loc:  "; loc += g_lastNodeId.length() ? g_lastNodeId : "—";
+    drawLine6x10(52, clip(loc, 21).c_str());
+    drawLine6x10(62, "[Line Tracking...]");
 }
 
 static void drawArrivedWaitReturn() {
-    // Header blinks together with buzzer window (g_arriveBeepUntil).
-    const bool beeping = (g_arriveBeepUntil != 0);
-    const bool on = !beeping || blink500();
-    drawHeaderBar(on ? "[ ARRIVED ]" : "           ", true);
+    // Header alternates between [ARRIVED] and WAIT RETURN every 500 ms
+    // to draw attention. Buzzer blink window kept independent.
+    drawHeaderBar(blink500() ? "[ARRIVED]" : "WAIT RETURN", true);
     String pt = "Pt: "; pt += g_patientName.length() ? g_patientName : "—";
     drawLine6x10(30, clip(pt, 21).c_str());
-    drawLine6x10(42, "Please collect items.");
+    drawLine6x10(42, "Collect your items.");
     drawLine6x10(62, ">> [PRESS] TO RETURN");
 }
 
@@ -424,45 +498,42 @@ static void drawDone() {
 static void drawFollowActive() {
     drawHeaderBar("FOLLOW MODE", true);
     if (g_followLost && g_followLostUntil && millis() < g_followLostUntil) {
-        // Alarm window: blink "TAG LOST" + show countdown.
         if (blink500()) drawLine6x10(30, "!! TAG LOST !!");
         else            drawLine6x10(30, "               ");
         uint32_t leftMs = g_followLostUntil - millis();
         char buf[24];
         snprintf(buf, sizeof(buf), "Search... %lus", (unsigned long)(leftMs / 1000UL + 1UL));
         drawLine6x10(42, buf);
-    } else if (g_followTagId >= 0) {
-        char buf[24];
-        snprintf(buf, sizeof(buf), "Tag ID: %d", g_followTagId);
-        drawLine6x10(30, buf);
-        drawLine6x10(42, "Tracking Target...");
     } else {
         drawLine6x10(30, "Tracking Target...");
-        drawLine6x10(42, "HuskyLens TAG lock");
+        if (g_followTagId >= 0) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), "Tag: %d  (OK)", g_followTagId);
+            drawLine6x10(42, buf);
+        } else {
+            drawLine6x10(42, "HuskyLens TAG lock");
+        }
     }
     drawLine6x10(62, ">> [HOLD] TO EXIT");
 }
 
 static void drawRecovery(const char* status) {
-    drawHeaderBar("RECOVERY MODE", false);
+    drawHeaderBar("RECOVERY", false);
     String s = "Status: "; s += status;
     drawLine6x10(30, clip(s, 21).c_str());
-    drawLine6x10(42, "Auto returning to MED");
     String cp = "CP: "; cp += g_lastNodeId.length() ? g_lastNodeId : "—";
-    drawLine6x10(62, clip(cp, 21).c_str());
+    drawLine6x10(42, clip(cp, 21).c_str());
+    drawLine6x10(62, "Auto returning...");
 }
 
 // ---- overlays (drawn on top) --------------------------------------
 static void drawObstacleOverlay() {
-    // Obstacle screen replaces whatever is beneath it.
+    // Status bar shows mode "[!] OBSTACLE" with battery; body says
+    // "PLEASE CLEAR PATH" centered.
     g_oled.clearBuffer();
-    g_oled.setFont(u8g2_font_logisoso16_tr);
-    const char* l1 = "!! OBSTACLE !!";
-    int w = g_oled.getUTF8Width(l1);
-    g_oled.drawStr((128 - w) / 2, 28, l1);
-    const char* l2 = "PLEASE CLEAR";
-    w = g_oled.getUTF8Width(l2);
-    g_oled.drawStr((128 - w) / 2, 56, l2);
+    drawHeaderBar(blink500() ? "[!] OBSTACLE" : "  OBSTACLE  ", true);
+    drawCentered6x10(38, "PLEASE CLEAR");
+    drawCentered6x10(52, "PATH");
 }
 
 static void drawWrongCpOverlay() {
@@ -549,6 +620,32 @@ static inline void enter(Sys s, const String& detail = "") {
     Serial.printf("[FSM] -> %s  (%s)\n", stateName(s), detail.c_str());
 }
 
+// Get the node-id of the Nth step in a compact route ("a,F|b,L|c,F").
+// Returns "" if idx is out of range.
+static String routeStepIdAt(const String& compact, int idx) {
+    if (idx < 0 || !compact.length()) return String();
+    int start = 0, count = 0;
+    for (int i = 0; i <= (int)compact.length(); ++i) {
+        if (i == (int)compact.length() || compact[i] == '|') {
+            if (count == idx) {
+                String seg = compact.substring(start, i);
+                int comma = seg.indexOf(',');
+                return comma > 0 ? seg.substring(0, comma) : seg;
+            }
+            ++count;
+            start = i + 1;
+        }
+    }
+    return String();
+}
+
+// Activate a new route on the master side (slave already received <ROUTE>).
+// Resets the next-CP index to 0 so the OLED shows the first step.
+static inline void setActiveRoute(const String& compact) {
+    g_activeRoute = compact;
+    g_routeIdx    = 0;
+}
+
 // Count steps in a compact route string ("a,F|b,L|c,F" → 3).
 static int routeStepCount(const String& compact) {
     if (!compact.length()) return 0;
@@ -573,15 +670,26 @@ static void onMission(const String& outboundCompact,
     if (!g_pendingOutbound.length()) return;
 
     g_uart.send("ROUTE", g_pendingOutbound);
+    setActiveRoute(g_pendingOutbound);
     MqttCfg::publishRouteAccept(g_missionId, routeStepCount(g_pendingOutbound));
     beep(120);
     Serial.printf("[MISSION] received id=%s state=%s\n",
                   g_missionId.c_str(), stateName(g_state));
-    // Accept new mission whenever we are not actively running another
-    // route/recovery — go to WAIT_START so OLED shows "NEW MISSION".
-    if (g_state == Sys::AUTO_IDLE          ||
-        g_state == Sys::DONE_AT_MED        ||
-        g_state == Sys::WAIT_START_OUTBOUND) {
+    // Accept new mission unless robot is mid-recovery or in FOLLOW.
+    // Any AUTO/idle/execution state is overridable — slave already received
+    // the new ROUTE which overwrites any pending route on its side.
+    const bool blockedByRecovery = (
+        g_state == Sys::CANCEL_SEARCH_CP    ||
+        g_state == Sys::WAIT_RECOVERY_ROUTE ||
+        g_state == Sys::EXECUTING_RECOVERY  ||
+        g_state == Sys::FOLLOW_ACTIVE       ||
+        g_state == Sys::FOLLOW_REC_START    ||
+        g_state == Sys::FOLLOW_REC_LINE_SEARCH ||
+        g_state == Sys::FOLLOW_REC_APPROACH ||
+        g_state == Sys::FOLLOW_REC_TRACK_TO_CP ||
+        g_state == Sys::FOLLOW_REC_WEB_WAIT ||
+        g_state == Sys::FOLLOW_REC_RUN_ROUTE);
+    if (!blockedByRecovery) {
         enter(Sys::WAIT_START_OUTBOUND, "press to start");
     }
 }
@@ -615,11 +723,13 @@ static void onReturnRoute(const String& routeCompact) {
     }
     if (g_state == Sys::WAIT_RECOVERY_ROUTE) {
         g_uart.send("ROUTE", routeCompact);
+        setActiveRoute(routeCompact);
         g_uart.send("START");
         MqttCfg::publishRouteAccept(g_missionId, routeStepCount(routeCompact));
         enter(Sys::EXECUTING_RECOVERY, "to MED");
     } else if (g_state == Sys::FOLLOW_REC_WEB_WAIT) {
         g_uart.send("ROUTE", routeCompact);
+        setActiveRoute(routeCompact);
         g_uart.send("START");
         MqttCfg::publishRouteAccept(g_missionId, routeStepCount(routeCompact));
         enter(Sys::FOLLOW_REC_RUN_ROUTE, "to MED");
@@ -653,6 +763,18 @@ static void onUartFrame(const String& cmd, const String& data) {
         const String nodeId = unknown ? String() : data;
         const uint16_t cpId = unknown ? 0 : nameToCpId(nodeId);
         if (!unknown) { g_lastNodeId = nodeId; g_lastCpId = cpId; }
+
+        // Advance route progress so OLED shows the next CP.
+        // Skip increment for the very first CP_REACHED if it's the
+        // start of the route (robot is already physically at step[0]
+        // when route loads, so that tag is just a confirmation scan,
+        // not an actual "reached new CP" event).
+        const bool isStartConfirm =
+            (g_routeIdx == 0 && nodeId.length() &&
+             nodeId == routeStepIdAt(g_activeRoute, 0));
+        if (!isStartConfirm && g_routeIdx < routeStepCount(g_activeRoute)) {
+            g_routeIdx++;
+        }
 
         if (g_state == Sys::EXECUTING_OUTBOUND ||
             g_state == Sys::EXECUTING_RETURN  ||
@@ -766,12 +888,73 @@ static void onUartFrame(const String& cmd, const String& data) {
         }
         return;
     }
+    if (cmd == "IDLE_SCAN") {
+        // Slave scanned an RFID while idle (no active route). Update the
+        // master's notion of the robot's location so MQTT/OLED reflect it.
+        const bool unknown = (data.length() && data[0] == '?');
+        if (!unknown && data.length()) {
+            g_lastNodeId = data;
+            g_lastCpId   = nameToCpId(data);
+            JsonDocument d;
+            d["evt"] = "idle_scan";
+            d["id"]  = g_lastCpId;
+            d["node"] = g_lastNodeId;
+            MqttCfg::publishEvent(d);
+        }
+        return;
+    }
+    if (cmd == "SCAN") {
+        // Slave echoes EVERY raw PN532 hit (even ones the FSM dedups).
+        // Format: "<id>,phase=<n>,exp=<expectedId>"
+        // We extract just the leading id and surface it as the robot's
+        // current location for the OLED moving screen, so the operator
+        // can verify the PN532 actually reads tags during route exec.
+        int comma = data.indexOf(',');
+        String id = (comma > 0) ? data.substring(0, comma) : data;
+        const bool unknown = (id.length() && id[0] == '?');
+        if (!unknown && id.length()) {
+            g_lastNodeId = id;
+            g_lastCpId   = nameToCpId(id);
+        }
+        return;
+    }
     if (cmd == "HB") {
         // Slave heartbeat — mark link alive and forward to serial monitor.
         g_lastSlaveHbMs = millis();
-        if (!g_slaveLinkOk) {
-            g_slaveLinkOk = true;
+        const bool wasDown = !g_slaveLinkOk;
+        g_slaveLinkOk = true;
+        if (wasDown) {
             Serial.println("[LINK] STM32 link UP");
+            // If the link was down when we sent ROUTE (or ROUTE+START),
+            // the slave never got them.  Re-send whatever is needed for
+            // the current master FSM state so the slave can catch up.
+            const String& route = g_activeRoute;
+            switch (g_state) {
+                case Sys::WAIT_START_OUTBOUND:
+                    // Slave needs ROUTE so that when the operator presses
+                    // the button it will already be in ROUTE_LOADED.
+                    if (route.length()) {
+                        g_uart.send("ROUTE", route);
+                        Serial.printf("[LINK] re-sent ROUTE (WAIT_START)\n");
+                    }
+                    break;
+                case Sys::EXECUTING_OUTBOUND:
+                case Sys::EXECUTING_RETURN:
+                case Sys::EXECUTING_RECOVERY:
+                case Sys::FOLLOW_REC_RUN_ROUTE:
+                    // Slave missed ROUTE + START. Re-send both so it
+                    // resumes executing from idx=0. The slave's dedup
+                    // and creep guards will fire just as if it was a
+                    // fresh start.
+                    if (route.length()) {
+                        g_uart.send("ROUTE", route);
+                        g_uart.send("START");
+                        Serial.printf("[LINK] re-sent ROUTE+START (EXECUTING)\n");
+                    }
+                    break;
+                default:
+                    break;
+            }
         }
         Serial.printf("[STM32] %s\n", data.c_str());
         return;
@@ -791,9 +974,13 @@ static void handleShortPress() {
             // Push the return-leg route, then START.
             if (g_pendingReturn.length()) {
                 g_uart.send("ROUTE", g_pendingReturn);
+                setActiveRoute(g_pendingReturn);
                 g_pendingReturn = "";
             }
             g_uart.send("START");
+            // Notify backend so it can raise the "đã nhận đồ, đang quay
+            // về" alert and update mission timing.
+            MqttCfg::publishReturnStarted(g_missionId, g_lastNodeId);
             enter(Sys::EXECUTING_RETURN);
             break;
         default:
@@ -883,6 +1070,7 @@ static void runWifiManager() {
 
 // --------------------------------------------------------------------
 void setup() {
+    SerialAndTelnet.setWelcomeMsg("== Carry Robot Master Telnet ==\r\n");
     Serial.begin(115200);
     Serial.println("\n[BOOT] Carry Robot Master");
 
@@ -890,6 +1078,10 @@ void setup() {
     pinMode(PIN_RELAY_1, OUTPUT);
     pinMode(PIN_RELAY_2, OUTPUT);
     relaysAuto();                                          // safe default
+
+    // Battery ADC: 11 dB attenuation → ~0..3.3 V range, 12-bit.
+    analogReadResolution(12);
+    analogSetPinAttenuation(PIN_BATT_ADC, ADC_11db);
 
     Wire.begin(PIN_OLED_SDA, PIN_OLED_SCL);
     g_oled.begin();
@@ -980,11 +1172,13 @@ static void openConfigPortalAndRestart(const char* reason) {
 
 // --------------------------------------------------------------------
 void loop() {
+    SerialAndTelnet.handle();
     ArduinoOTA.handle();
     MqttCfg::loop();
     g_uart.loop();
     beepService();
     relayHeartbeat();
+    batteryService();
 
     // ---- Boot-time MQTT gate ------------------------------------------
     // Do not enter AUTO_IDLE until MQTT is actually connected. If it
@@ -1026,8 +1220,38 @@ void loop() {
     static uint32_t tHb = 0;
     if (MqttCfg::isConnected() && millis() - tHb > 3000) {
         tHb = millis();
-        String curLoc = g_lastNodeId.length() ? g_lastNodeId : String(START_CHECKPOINT);
-        MqttCfg::publishHello(curLoc);
+        // Only report a location once we've actually scanned a tag.
+        // Otherwise leave it empty so the backend keeps whatever value
+        // it already has (do not force-default to START_CHECKPOINT/MED).
+
+        // Map system FSM → simple "mode" string the dashboard expects.
+        // (idle = parked at MED waiting; auto = running a route /
+        // recovering; follow* = HuskyLens follow mode active.)
+        const char* modeStr;
+        switch (g_state) {
+            case Sys::FOLLOW_ACTIVE:
+                modeStr = "follow"; break;
+            case Sys::FOLLOW_REC_START:
+            case Sys::FOLLOW_REC_LINE_SEARCH:
+            case Sys::FOLLOW_REC_APPROACH:
+            case Sys::FOLLOW_REC_TRACK_TO_CP:
+            case Sys::FOLLOW_REC_WEB_WAIT:
+            case Sys::FOLLOW_REC_RUN_ROUTE:
+            case Sys::FOLLOW_REC_DONE:
+                modeStr = "follow_recovery"; break;
+            case Sys::AUTO_IDLE:
+            case Sys::DONE_AT_MED:
+                modeStr = "idle"; break;
+            default:
+                modeStr = "auto"; break;
+        }
+
+        // Battery percent: read from GPIO35 ADC by batteryService().
+        // -1 until first sample lands → publishHello() will omit the
+        // "pct" field while the filter is still warming up.
+        const int batteryPct = g_battPct;
+
+        MqttCfg::publishHello(g_lastNodeId, String(modeStr), batteryPct);
     }
 
     // ---- Obstacle alarm: beep every 400 ms while blocked -----------

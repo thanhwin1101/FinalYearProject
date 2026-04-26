@@ -45,6 +45,21 @@
 #define PIN_BUZZER          25
 #define ARRIVED_BEEP_MS     3000
 
+// ---- Battery monitor (ADC1_CH7 = GPIO35, input-only) ---------------
+//  GPIO35 is wired DIRECTLY to the battery rail being monitored.
+//  ADC range with 11 dB attenuation is ~0..3.3 V (calibrated readout
+//  via analogReadMilliVolts()). Pack endpoints from the user:
+//      V_min = 2.900 V  → 0 %
+//      V_max = 3.250 V  → 100 %
+//  If you add an external divider later, change BATT_DIVIDER to
+//  (R_top + R_bot) / R_bot so V_pack = V_adc * BATT_DIVIDER.
+#define PIN_BATT_ADC        35
+#define BATT_DIVIDER        1.0f
+#define BATT_VMIN_MV        2900
+#define BATT_VMAX_MV        3250
+#define BATT_SAMPLE_MS      500
+#define BATT_FILTER_TAPS    16
+
 // ---- 2-channel Relay -----------------------------------------------
 //  Spec: Auto Mode  →  R2 = ON, R1 = OFF
 //        Follow Mode →  R1 = ON, R2 = OFF

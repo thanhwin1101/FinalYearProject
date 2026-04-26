@@ -230,6 +230,18 @@ inline void publishMissionDone(const String& missionId) {
     publishEvent(d);
 }
 
+// Operator pressed the button at the destination → robot is leaving for
+// MED. Backend uses this to raise an alert "BN <name> ở giường <bed>
+// đã nhận đồ, robot đang quay về".
+inline void publishReturnStarted(const String& missionId,
+                                 const String& nodeId = "") {
+    JsonDocument d;
+    d["evt"]     = "return_started";
+    d["mission"] = missionId;
+    if (nodeId.length()) d["node"] = nodeId;
+    publishEvent(d);
+}
+
 inline void publishCpMismatch(uint16_t recvId, const String& recvName,
                               uint16_t expId,  const String& expName) {
     JsonDocument d;
@@ -293,12 +305,19 @@ inline void publishReturnRequest(uint16_t cpId) {
 
 // Announce ourselves to the backend so the dashboard creates the
 // Robot row even before any mission starts.
-inline void publishHello(const String& location = "") {
+//   - location:   last scanned CP id (empty = unknown, backend keeps prev)
+//   - mode:       "auto" | "follow" | "follow_recovery" | "idle" (omit if empty)
+//   - batteryPct: 0..100 percent, or <0 to omit (no battery sensor wired)
+inline void publishHello(const String& location = "",
+                         const String& mode = "",
+                         int batteryPct = -1) {
     JsonDocument d;
     d["evt"] = "hello";
     d["id"]  = ROBOT_ID;
     d["fw"]  = __DATE__ " " __TIME__;
     if (location.length()) d["location"] = location;
+    if (mode.length())     d["mode"]     = mode;
+    if (batteryPct >= 0)   d["pct"]      = batteryPct;
     publishEvent(d);
 }
 
