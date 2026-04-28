@@ -12,6 +12,7 @@
 9. [Hospital Dashboard – Frontend](#9-hospital-dashboard--frontend)
 10. [Communication Protocols](#10-communication-protocols)
 11. [Development & Build](#11-development--build)
+12. [Mode State Machines (AUTO / FOLLOW / RECOVERY)](#12-mode-state-machines-auto--follow--recovery)
 
 ---
 
@@ -622,3 +623,307 @@ PORT=3000
 | `R{1-4}D{1-2}` | Room doors (2 per room) | `R3D1` |
 
 Total: 37 nodes across 4 rooms (8 nodes each: D1, D2, M1-M3, O1-O3), 3 corridor nodes, 4 junctions, 1 MED.
+
+---
+
+## 12. Mode State Machines (AUTO / FOLLOW / RECOVERY)
+
+The Carry Robot firmware is split between an **ESP32 master** (mission orchestration, MQTT, OLED, button, relays, buzzer) and an **STM32F103 slave** (motors, line sensor, RFID, HuskyLens, servo, ultrasonic). Every operating mode is implemented as a coordinated pair of state machines: the master drives the high-level flow, while the slave runs the real‑time motion/sensor sub-states. Master ↔ slave communication is the framed UART protocol described in Section 10.
+
+This section documents the three top-level modes:
+
+- **AUTO** – mission-driven point-to-point delivery with line following and RFID checkpoints.
+- **FOLLOW** – HuskyLens tag-tracking person-follow.
+- **FOLLOW → AUTO RECOVERY** – automatic re-entry from FOLLOW back onto a line and home to `MED`.
+
+> Source of truth: [`CarryRobot/carry_master/src/main.cpp`](CarryRobot/carry_master/src/main.cpp), [`CarryRobot/carry_slave/src/main.cpp`](CarryRobot/carry_slave/src/main.cpp), [`CarryRobot/carry_slave/src/huskylens_follow_pid.h`](CarryRobot/carry_slave/src/huskylens_follow_pid.h).
+
+### 12.1 Master state enum (`Sys`) – overview
+
+| Group | States |
+|---|---|
+| Boot / network | `BOOTING`, `CONNECTING`, `WIFI_AP_PORTAL` |
+| AUTO mission | `AUTO_IDLE`, `WAIT_START_OUTBOUND`, `EXECUTING_OUTBOUND`, `AT_LAST_OUTBOUND`, `WAIT_START_RETURN`, `EXECUTING_RETURN`, `DONE_AT_MED` |
+| AUTO cancel/recovery | `CANCEL_SEARCH_CP`, `WAIT_RECOVERY_ROUTE`, `EXECUTING_RECOVERY` |
+| FOLLOW | `FOLLOW_ACTIVE` |
+| FOLLOW→AUTO recovery | `FOLLOW_REC_START`, `FOLLOW_REC_LINE_SEARCH`, `FOLLOW_REC_APPROACH`, `FOLLOW_REC_TRACK_TO_CP`, `FOLLOW_REC_WEB_WAIT`, `FOLLOW_REC_RUN_ROUTE`, `FOLLOW_REC_DONE` |
+
+### 12.2 Slave state enums (`Mode` × `Phase`)
+
+```cpp
+enum class Mode  { AUTO, FOLLOW, FOLLOW_RECOVERY };
+enum class Phase { IDLE, ROUTE_LOADED, EXECUTING, CANCEL_SEARCH_CP,
+                   FREC_LINE_SEARCH, FREC_APPROACH, FREC_TRACK_TO_CP };
+```
+
+`Mode` is set by the master via `<MODE:...>` UART frames. `Phase` is set internally on the slave in response to `<ROUTE>`, `<START>`, `<CANCEL_MISSION>`, `<SEARCH_LINE_45>`, `<APPROACH_LINE>`, `<TRACK_TO_CP>` and on RFID/line events.
+
+### 12.3 Top-level mode switch
+
+```mermaid
+stateDiagram-v2
+    [*] --> BOOTING
+    BOOTING --> CONNECTING : setup() done
+    CONNECTING --> WIFI_AP_PORTAL : WiFi timeout
+    CONNECTING --> AUTO_IDLE : MQTT connected
+    AUTO_IDLE --> AUTO : short-press / MQTT mission
+    AUTO_IDLE --> FOLLOW_ACTIVE : long-press (>=1500ms)\nrelaysFollow(); MODE:FOLLOW (deferred 3s)
+    FOLLOW_ACTIVE --> FOLLOW_REC_START : long-press again\nrelaysFollowRecovery(); MODE:FOLLOW_RECOVERY
+    FOLLOW_REC_START --> AUTO_IDLE : DONE at MED\nrelaysAuto(); MODE:AUTO
+    AUTO --> AUTO_IDLE : DONE at MED
+```
+
+Two physical inputs drive every top-level transition:
+
+- **Short press (<1.5 s)** – starts/continues a mission step (outbound start, return start).
+- **Long press (≥1.5 s)** – toggles between AUTO ↔ FOLLOW; when already in FOLLOW it triggers FOLLOW→AUTO recovery.
+
+The master is also fully MQTT-controllable: `mission`, `cancel`, `return_route`, and `route` actions can drive the same transitions without operator input.
+
+---
+
+### 12.4 AUTO Mode
+
+#### 12.4.1 Master state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> AUTO_IDLE
+    AUTO_IDLE --> WAIT_START_OUTBOUND : MQTT mission\nUART <ROUTE:outbound>
+    WAIT_START_OUTBOUND --> EXECUTING_OUTBOUND : SHORT_PRESS\nUART <START>
+    EXECUTING_OUTBOUND --> EXECUTING_OUTBOUND : <CP_REACHED>\nMQTT checkpoint
+    EXECUTING_OUTBOUND --> AT_LAST_OUTBOUND : <ARRIVED>\nMQTT arrived_destination + return_request\nbeep 3s
+    AT_LAST_OUTBOUND --> EXECUTING_RETURN : SHORT_PRESS\nUART <ROUTE:return> + <START>\nMQTT return_started
+    EXECUTING_RETURN --> DONE_AT_MED : <DONE:MED>\nrelaysAuto(); UART <MODE:AUTO>\nMQTT mission_done
+    DONE_AT_MED --> AUTO_IDLE
+
+    EXECUTING_OUTBOUND --> CANCEL_SEARCH_CP : MQTT action=cancel\nUART <CANCEL_MISSION>
+    EXECUTING_RETURN --> CANCEL_SEARCH_CP : MQTT action=cancel
+    CANCEL_SEARCH_CP --> WAIT_RECOVERY_ROUTE : <CP_REACHED>\nMQTT recovery_nfc + return_request
+    WAIT_RECOVERY_ROUTE --> EXECUTING_RECOVERY : MQTT return_route\nUART <ROUTE> + <START>
+    EXECUTING_RECOVERY --> DONE_AT_MED : <DONE:MED>
+
+    EXECUTING_OUTBOUND --> WAIT_RECOVERY_ROUTE : <WRONG_CP>\nMQTT cp_mismatch
+    EXECUTING_RETURN --> WAIT_RECOVERY_ROUTE : <WRONG_CP>
+```
+
+#### 12.4.2 Slave phase machine (Mode = AUTO)
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> ROUTE_LOADED : <ROUTE> received\nparseRoute(); resetCheckpointDedup()
+    ROUTE_LOADED --> EXECUTING : <START>\nPN532 reinit; auto-confirm route[0]\n<CP_REACHED:route[0]>
+    EXECUTING --> EXECUTING : line PD + RFID poll\nexpected CP -> action -> <CP_REACHED>
+    EXECUTING --> IDLE : last CP reached\n<ARRIVED:id> or <DONE:MED>
+    EXECUTING --> CANCEL_SEARCH_CP : <CANCEL_MISSION>
+    CANCEL_SEARCH_CP --> IDLE : ANY tag scanned\nbrake; <CP_REACHED:id>
+    EXECUTING --> IDLE : wrong CP\n180° turn; <WRONG_CP:id>
+```
+
+Per-tick behavior in `EXECUTING` (slave loop, see [`carry_slave/src/main.cpp`](CarryRobot/carry_slave/src/main.cpp)):
+
+1. `LineFollower::step(outL, outR)` produces L/R PWM from the 3-eye sensor (PD on `LF_BASE_PWM`, `LF_KP`, `LF_KD`, asymmetric soft/hard pivot when err = ±1 / ±2).
+2. `g_drive.drive(outL, outR)` — gated by ultrasonic obstacle service (`SR05_STOP_CM = 20 cm`, resume at `40 cm`).
+3. `g_rfid.poll()` (PN532 SPI, 40 ms timeout, 700 ms repeat suppression). On any tag `handleCheckpoint(id)` runs:
+   - Brake first, then dedup against `g_lastHandledCp`.
+   - If `id == route[g_routeIdx].id`: emit `<CP_REACHED>`, run action `F` / `L` / `R` / `B` (90°/180° tank turn), advance index. Last step → `finishRoute()` → `<ARRIVED>` (non-MED) or `<DONE>` (MED).
+   - Else: 180° turn, emit `<WRONG_CP>`, drop to `IDLE`.
+
+#### 12.4.3 Per-state side effects (master)
+
+| Master state | Relays (R1 / R2) | UART out | MQTT out | OLED |
+|---|---|---|---|---|
+| `AUTO_IDLE` | OFF / ON | passive HB | `hello` (3 s) | "AUTO IDLE", location |
+| `WAIT_START_OUTBOUND` | OFF / ON | `<ROUTE:outbound>` | `route_accept` | patient + dest, "[PRESS] START" |
+| `EXECUTING_OUTBOUND` | OFF / ON | `<START>` | `checkpoint` per CP | "MOVING >>", next CP |
+| `AT_LAST_OUTBOUND` | OFF / ON | — | `arrived_destination`, `return_request` | "ARRIVED", "[PRESS] RETURN", 3 s beep |
+| `EXECUTING_RETURN` | OFF / ON | `<ROUTE:return>`, `<START>` | `return_started`, `checkpoint` | "Returning to MED" |
+| `DONE_AT_MED` | OFF / ON | `<MODE:AUTO>` | `mission_done` | "MISSION DONE" |
+| `CANCEL_SEARCH_CP` | OFF / ON | `<CANCEL_MISSION>` | `cancel_ack` | "CANCELLING" |
+| `WAIT_RECOVERY_ROUTE` | OFF / ON | — | `recovery_nfc`, `return_request` | "WAIT RECOV" |
+| `EXECUTING_RECOVERY` | OFF / ON | `<ROUTE>`, `<START>` | `route_accept`, `checkpoint` | "RECOVERY" |
+
+---
+
+### 12.5 FOLLOW Mode
+
+FOLLOW is a single-state operator mode on the master (`FOLLOW_ACTIVE`); all real-time behavior lives in the slave's `HuskyFollowPID` running inside `Mode::FOLLOW`.
+
+#### 12.5.1 Entry sequence
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant M as Master (ESP32)
+    participant S as Slave (STM32)
+    participant H as HuskyLens
+
+    Op->>M: long-press (>=1.5s) in AUTO_IDLE
+    M->>M: relaysFollow() (R1=ON, R2=OFF)
+    M->>M: beep x2; publish evt mode=follow
+    M->>M: g_pendingFollowSendAt = now+3000 (HuskyLens warmup)
+    Note over M: enter FOLLOW_ACTIVE, OLED "warmup 3s"
+    M-->>S: (after 3s) <MODE:FOLLOW>
+    S->>H: switchAlgorithm(TAG_RECOGNITION)
+    S->>S: g_follow.enable(true); _warmupUntil = now+3000
+    Note over S: another 3s gate before servo attach
+    S->>S: every 50ms HuskyFollowPID::loop()
+```
+
+Two stacked 3-second warmups protect the boot sequence: HuskyLens needs ~3 s after R1 powers it, and the servo / PD loop waits another 3 s before commanding motors.
+
+#### 12.5.2 Slave follow loop (`HuskyFollowPID::loop`, every 50 ms)
+
+```mermaid
+stateDiagram-v2
+    [*] --> WARMUP
+    WARMUP --> NO_TAG : warmup elapsed; servo attach @ 90°
+    NO_TAG --> TAG_TRACKED : tag with ID >= FOLLOW_MIN_ID seen\n<TAG_ID:id>
+    TAG_TRACKED --> TAG_TRACKED : Y-axis servo PD\nX-axis steer PD\nspeed = f(area%)
+    TAG_TRACKED --> TAG_LOST_GRACE : frame has no tag
+    TAG_LOST_GRACE --> TAG_LOST : 8s elapsed (FOLLOW_LOST_MS)\n<TAG_LOST:1>
+    TAG_LOST --> TAG_TRACKED : tag re-seen\n<TAG_LOST:0>
+    TAG_LOST_GRACE --> TAG_TRACKED : tag re-seen
+```
+
+Motion law inside `TAG_TRACKED`:
+
+- **Speed by area** – `pct = area * 100 / (320*240)`; if `pct ≥ 30` motors stop (target reached), else cruise interpolates `FOLLOW_PWM_MAX (200)` → `FOLLOW_PWM_MIN (100)` as `pct` grows.
+- **Steering** – PD on `errX = xCenter − 160` produces an asymmetric boost capped at `FOLLOW_X_MAX_BOOST = 90`; outer wheel speeds up, inner wheel slows down (never reverses).
+- **Servo Y** – PD on `errY = yCenter − 120`, clamped step `±SERVO_Y_MAX_STEP`, range `[SERVO_Y_MIN, SERVO_Y_MAX]`, deadband 25 px, tick 40 ms.
+- **Lost alarm** – after 8 s without a tag the slave emits `<TAG_LOST:1>`; the master arms a 30 s buzzer-pulse + OLED "!! TAG LOST !!" alarm and publishes `tag_lost` on MQTT.
+
+#### 12.5.3 Telemetry
+
+| Slave → Master frame | Master → MQTT event | Notes |
+|---|---|---|
+| `<TAG_ID:id>` | `follow_tag` | Sent when tracked ID changes (or first sighting). |
+| `<TAG_LOST:1>` | `tag_lost` | After 8 s loss; arms master 30 s alarm. |
+| `<TAG_LOST:0>` | `follow_tag` | Tag re-acquired; clears master alarm. |
+| `<FOL:pct=…,cr=…,errX=…,L=…,R=…>` | (debug, telnet) | Throttled 500 ms, follow-loop diagnostics. |
+
+While in `FOLLOW_ACTIVE` the master also **suppresses obstacle alerts** from `<OBSTACLE>` (per spec, ultrasonic is ignored during FOLLOW because the operator owns the path).
+
+---
+
+### 12.6 FOLLOW → AUTO RECOVERY Mode
+
+Recovery is the most coordinated flow: the master walks the slave through a chain of sub-states that re-acquires a line and an RFID checkpoint, then asks the backend for a route home. Both relays are **ON** for the entire recovery (HuskyLens needed for the line search, PN532 needed for the checkpoint scan).
+
+#### 12.6.1 Master sub-state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> FOLLOW_REC_START
+    FOLLOW_REC_START --> FOLLOW_REC_LINE_SEARCH : UART <SEARCH_LINE_45>
+    FOLLOW_REC_LINE_SEARCH --> FOLLOW_REC_APPROACH : <LINE_FOUND>\nUART <APPROACH_LINE>
+    FOLLOW_REC_APPROACH --> FOLLOW_REC_TRACK_TO_CP : <LINE_LOCKED>\nUART <TRACK_TO_CP>
+    FOLLOW_REC_TRACK_TO_CP --> FOLLOW_REC_WEB_WAIT : <CP_REACHED>\nMQTT recovery_nfc + return_request
+    FOLLOW_REC_WEB_WAIT --> FOLLOW_REC_RUN_ROUTE : MQTT return_route\nUART <ROUTE> + <START>
+    FOLLOW_REC_RUN_ROUTE --> FOLLOW_REC_DONE : <DONE:MED>\nrelaysAuto(); UART <MODE:AUTO>
+    FOLLOW_REC_DONE --> [*] : enter AUTO_IDLE
+```
+
+#### 12.6.2 Slave phase machine (Mode = FOLLOW_RECOVERY)
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE : MODE:FOLLOW_RECOVERY\ng_rfid.reinit()\ng_follow.useLineAlgorithm()\ng_follow.parkAtRecovery() (servo→150°)
+    IDLE --> FREC_LINE_SEARCH : <SEARCH_LINE_45>
+    FREC_LINE_SEARCH --> FREC_LINE_SEARCH : tankTurn45Right(); 150ms wait\ncheck HuskyLens LINE
+    FREC_LINE_SEARCH --> FREC_APPROACH : seesLine() == true\n<LINE_FOUND>; <APPROACH_LINE>
+    FREC_APPROACH --> FREC_APPROACH : creep at LF_BASE_PWM/2\npoll 3-eye sensor
+    FREC_APPROACH --> FREC_TRACK_TO_CP : any L|C|R = LOW\nbrake; <LINE_LOCKED>; <TRACK_TO_CP>
+    FREC_TRACK_TO_CP --> FREC_TRACK_TO_CP : 3-eye line PD + PN532 poll
+    FREC_TRACK_TO_CP --> IDLE : ANY tag scanned\nbrake; <CP_REACHED:id>
+    IDLE --> ROUTE_LOADED : <ROUTE> from master
+    ROUTE_LOADED --> EXECUTING : <START>\n(same as AUTO EXECUTING)
+    EXECUTING --> IDLE : <DONE:MED>
+```
+
+#### 12.6.3 Full handoff sequence
+
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant M as Master
+    participant S as Slave
+    participant B as Backend
+
+    Op->>M: long-press in FOLLOW_ACTIVE
+    M->>M: relaysFollowRecovery() (R1=ON, R2=ON)
+    M->>M: delay 400ms (PN532 boot)
+    M->>S: <MODE:FOLLOW_RECOVERY>
+    M->>S: <SEARCH_LINE_45>
+    M->>B: evt mode=auto
+    Note over M,S: master = FOLLOW_REC_LINE_SEARCH
+    loop until line arrow detected
+        S->>S: tankTurn45Right(); wait 150ms
+        S->>S: HuskyLens LINE algorithm check
+    end
+    S->>M: <LINE_FOUND>
+    M->>S: <APPROACH_LINE>
+    Note over M,S: master = FOLLOW_REC_APPROACH
+    loop until 3-eye sees line
+        S->>S: drive(LF_BASE_PWM/2, LF_BASE_PWM/2)
+        S->>S: read L/C/R
+    end
+    S->>M: <LINE_LOCKED>
+    M->>S: <TRACK_TO_CP>
+    Note over M,S: master = FOLLOW_REC_TRACK_TO_CP
+    loop until any RFID tag
+        S->>S: line PD + PN532 poll
+    end
+    S->>M: <CP_REACHED:cpId>
+    M->>B: recovery_nfc; robot/return_request {checkpoint_id}
+    Note over M: master = FOLLOW_REC_WEB_WAIT
+    B-->>M: cmd action=return_route, route=[…]
+    M->>S: <ROUTE:compact>
+    M->>S: <START>
+    Note over M,S: master = FOLLOW_REC_RUN_ROUTE\nslave = EXECUTING (AUTO route runner)
+    loop per checkpoint
+        S->>M: <CP_REACHED:id>
+        M->>B: checkpoint
+    end
+    S->>M: <DONE:MED>
+    M->>M: relaysAuto() (R1=OFF, R2=ON)
+    M->>S: <MODE:AUTO>
+    M->>B: mission_done
+    Note over M: master = FOLLOW_REC_DONE → AUTO_IDLE
+```
+
+The recovery route returned by the backend is normalized so its first step always uses action `F` (forward), so the slave never executes a redundant 180° turn at the very first checkpoint after the in-place spin during line search.
+
+---
+
+### 12.7 Cross-mode coordination summary
+
+| Concern | Master role | Slave role | Wire frames |
+|---|---|---|---|
+| Mode switch | Sets relays, defers `MODE` for warmups, owns OLED text | Reinits affected peripherals (PN532 / HuskyLens), parks servo, resets PID state | `<MODE:AUTO\|FOLLOW\|FOLLOW_RECOVERY>` |
+| Route load | Compacts to `id1,a1\|id2,a2\|...`, caches as `g_activeRoute` for re-send on link recovery | Parses to `g_route[]`, resets dedup | `<ROUTE:…>` |
+| Start | Triggered by short-press or backend on recovery | Auto-confirms `route[0]`, enters `EXECUTING` | `<START>` |
+| Checkpoint | Publishes MQTT `checkpoint`; advances `g_routeIdx` | Brakes on every tag, dedups (700 ms), runs action | `<CP_REACHED:id>` |
+| Arrival | Publishes `arrived_destination` + `return_request`; 3 s beep | Final non-MED CP → `finishRoute()` | `<ARRIVED:id>` |
+| Mission done | Forces relays AUTO + `<MODE:AUTO>`; publishes `mission_done` | Final MED CP | `<DONE:MED>` |
+| Wrong CP | Transitions to `WAIT_RECOVERY_ROUTE`; publishes `cp_mismatch` | 180° turn, drop to IDLE | `<WRONG_CP:id>` |
+| Cancel | Sends `<CANCEL_MISSION>` on MQTT `action=cancel` | Stays line-tracking until ANY tag, then halts | `<CANCEL_MISSION>` then `<CP_REACHED>` |
+| Tag tracking | Forwards as `follow_tag` / `tag_lost`; arms 30 s alarm | Runs HuskyLens PD, emits ID + lost transitions | `<TAG_ID:id>`, `<TAG_LOST:0\|1>` |
+| Line recovery | Drives the 3-step `SEARCH_LINE_45` → `APPROACH_LINE` → `TRACK_TO_CP` chain | Implements 45° hops, creep approach, line+RFID hunt | `<LINE_FOUND>`, `<LINE_LOCKED>` |
+| Obstacle | Buzzer pulse + MQTT `obstacle` (suppressed in FOLLOW) | Median-of-3 SR05; brakes between 20 cm and 40 cm hysteresis | `<OBSTACLE:0\|1>` |
+| Link health | 5 s no-HB → link DOWN; on recovery re-sends cached `<ROUTE>` and (if executing) `<START>` | Emits `<HB>` every 500/2000 ms with mode/phase diagnostics | `<HB:m=…,p=…>` |
+
+### 12.8 Key timing constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `BTN_LONG_MS` | 1500 ms | Long-press threshold (mode toggle). |
+| `RELAY_SETTLE_MS` | 400 ms | Wait for PN532 / HuskyLens to boot after relay change. |
+| `SERVO_Y_WARMUP_MS` | 3000 ms | HuskyLens stabilization before servo attach. |
+| `FOLLOW_LOST_MS` | 8000 ms | Tag-lost grace before `<TAG_LOST:1>`. |
+| `ARRIVED_BEEP_MS` | 3000 ms | Buzzer at destination. |
+| `NFC_REPEAT_MS` | 700 ms | RFID dedup window. |
+| `TURN_45/90/180_MS` | 180 / 495 / 875 ms | Tank-turn durations (open-loop). |
+| `SR05_STOP_CM / RESUME_CM` | 20 / 40 cm | Obstacle hysteresis. |
+| `STM32_LINK_WATCHDOG` | 5000 ms | No-HB → link DOWN; triggers route re-send on recovery. |
