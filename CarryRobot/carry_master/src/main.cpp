@@ -35,6 +35,9 @@
 #include <Preferences.h>
 #include <ArduinoOTA.h>
 #include <TelnetSpy.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 // --------------------------------------------------------------------
 //  TelnetSpy — mirrors USB Serial onto TCP port 23 once Wi-Fi is up.
@@ -51,6 +54,31 @@ TelnetSpy SerialAndTelnet;
 #include "mqtt_config.h"
 #include "button_logic.h"
 #include "uart_master.h"
+
+// --------------------------------------------------------------------
+//  FreeRTOS Concurrency & RAII Thread-Safety
+// --------------------------------------------------------------------
+static SemaphoreHandle_t g_fsmMutex = nullptr;
+
+static inline bool lockFsm(uint32_t waitMs = 100) {
+    if (!g_fsmMutex) return true;
+    return xSemaphoreTakeRecursive(g_fsmMutex, pdMS_TO_TICKS(waitMs)) == pdTRUE;
+}
+
+static inline void unlockFsm() {
+    if (g_fsmMutex) xSemaphoreGiveRecursive(g_fsmMutex);
+}
+
+struct FsmLockGuard {
+    bool locked;
+    FsmLockGuard(uint32_t waitMs = 100) {
+        locked = lockFsm(waitMs);
+    }
+    ~FsmLockGuard() {
+        if (locked) unlockFsm();
+    }
+    explicit operator bool() const { return locked; }
+};
 
 // --------------------------------------------------------------------
 //  System-wide FSM
@@ -117,7 +145,10 @@ static void batteryService() {
     else if (g_battMv >= BATT_VMAX_MV) pct = 100;
     else pct = (int)(((uint32_t)(g_battMv - BATT_VMIN_MV) * 100UL) /
                      (BATT_VMAX_MV - BATT_VMIN_MV));
-    g_battPct = pct;
+    FsmLockGuard lock(20);
+    if (lock) {
+        g_battPct = pct;
+    }
 }
 
 
@@ -220,6 +251,12 @@ static const char* stateName(Sys s);   // fwd-decl so [RELAY] log can print stat
 static String routeStepIdAt(const String& compact, int idx);   // fwd-decl for OLED draw
 static const char* relayPolicyForState(Sys s);  // fwd-decl: "AUTO"/"FOLLOW"/"REC"
 
+// Forward declarations for FreeRTOS Tasks
+void Task_Network(void* pvParameters);
+void Task_UART_Link(void* pvParameters);
+void Task_FSM_Logic(void* pvParameters);
+void Task_UI_Display(void* pvParameters);
+
 // Wrap raw relay writes so every transition is logged with caller hint.
 static void relaysAuto()           { digitalWrite(PIN_RELAY_1, RELAY_OFF_LEVEL); digitalWrite(PIN_RELAY_2, RELAY_ON_LEVEL);
     Serial.printf("[RELAY] policy=AUTO    R1=%d R2=%d\n", digitalRead(PIN_RELAY_1), digitalRead(PIN_RELAY_2)); }
@@ -291,10 +328,10 @@ static void relayHeartbeat() {
 // --------------------------------------------------------------------
 //  Buzzer
 // --------------------------------------------------------------------
-static void beep(uint16_t ms) {
-    digitalWrite(PIN_BUZZER, HIGH); delay(ms); digitalWrite(PIN_BUZZER, LOW);
-}
 static void beepStart(uint32_t durMs) { g_arriveBeepUntil = millis() + durMs; digitalWrite(PIN_BUZZER, HIGH); }
+static void beep(uint16_t ms) {
+    beepStart(ms);
+}
 static void beepService() {
     if (g_arriveBeepUntil && millis() >= g_arriveBeepUntil) {
         digitalWrite(PIN_BUZZER, LOW);
@@ -358,16 +395,37 @@ static const char* stateName(Sys s) {
     return "?";
 }
 
+// --------------------------------------------------------------------
+//  OLED State Snapshot (Thread-Safe Decoupling Pattern)
+// --------------------------------------------------------------------
+struct UiStateSnapshot {
+    Sys      state            = Sys::BOOTING;
+    int      battPct          = -1;
+    String   patientName;
+    String   destLabel;
+    String   activeRoute;
+    uint8_t  routeIdx         = 0;
+    String   lastNodeId;
+    bool     obstacleActive   = false;
+    bool     followLost       = false;
+    uint32_t followLostUntil  = 0;
+    int      followTagId      = -1;
+    uint32_t wrongCpUntilMs   = 0;
+    String   wrongCpExp;
+    String   wrongCpRecv;
+};
+static UiStateSnapshot s_snap;
+
 // ---- small drawing primitives -------------------------------------
 static inline bool blink500() { return (millis() / 500) & 1; }
 
 // Status-bar header (top 0..15 px). Title left-aligned in 7x14 bold,
 // battery percent right-aligned in small 6x10 ("[NN%]" or "[--%]").
-// Pulls battery from g_battPct (set by batteryService()).
+// Pulls battery from s_snap.battPct (snapshot from batteryService()).
 static void drawHeaderBar(const char* text, bool inverted) {
     char battStr[8];
-    if (g_battPct >= 0) snprintf(battStr, sizeof(battStr), "[%d%%]", g_battPct);
-    else                snprintf(battStr, sizeof(battStr), "[--%%]");
+    if (s_snap.battPct >= 0) snprintf(battStr, sizeof(battStr), "[%d%%]", s_snap.battPct);
+    else                     snprintf(battStr, sizeof(battStr), "[--%%]");
 
     if (inverted) {
         g_oled.setDrawColor(1);
@@ -414,18 +472,12 @@ static String clip(const String& s, size_t n) {
 
 // ---- per-state screen renderers -----------------------------------
 static void drawBootOrConnecting() {
-    // +-------------------------+
-    // |      CARRY ROBOT        |  big
-    // |-------------------------|
-    // | WiFi: <status>          |
-    // | MQTT: <status>          |
-    // +-------------------------+
     drawCenteredBig(18, "AGV_01");
     g_oled.drawHLine(0, 24, 128);
 
     String wifi = "WiFi: ";
     if (WiFi.isConnected()) { wifi += WiFi.localIP().toString(); }
-    else if (g_state == Sys::BOOTING) wifi += "Init...";
+    else if (s_snap.state == Sys::BOOTING) wifi += "Init...";
     else wifi += "Connecting...";
     drawLine6x10(40, clip(wifi, 21).c_str());
 
@@ -445,7 +497,7 @@ static void drawApPortal() {
 static void drawAutoIdle() {
     drawHeaderBar("AUTO_IDLE", true);
     String loc = "Loc: ";
-    loc += g_lastNodeId.length() ? g_lastNodeId : String(START_CHECKPOINT);
+    loc += s_snap.lastNodeId.length() ? s_snap.lastNodeId : String(START_CHECKPOINT);
     drawLine6x10(30, clip(loc, 21).c_str());
     drawLine6x10(42, "Stat: READY");
     drawLine6x10(62, "Waiting for Web...");
@@ -453,37 +505,30 @@ static void drawAutoIdle() {
 
 static void drawWaitStartOutbound() {
     drawHeaderBar("NEW MISSION", false);
-    String pt = "Pt: "; pt += g_patientName.length() ? g_patientName : "—";
+    String pt = "Pt: "; pt += s_snap.patientName.length() ? s_snap.patientName : "—";
     drawLine6x10(30, clip(pt, 21).c_str());
-    String to = "To: "; to += g_destLabel.length() ? g_destLabel : "—";
+    String to = "To: "; to += s_snap.destLabel.length() ? s_snap.destLabel : "—";
     drawLine6x10(42, clip(to, 21).c_str());
     if (blink500()) drawLine6x10(62, ">> [PRESS] TO START");
 }
 
 static void drawExecutingMoving() {
     drawHeaderBar("MOVING >>", false);
-    String dst = "Dest: "; dst += g_destLabel.length() ? g_destLabel : "—";
+    String dst = "Dest: "; dst += s_snap.destLabel.length() ? s_snap.destLabel : "—";
     drawLine6x10(30, clip(dst, 21).c_str());
-    // g_routeIdx points at the CP just reached (0 = start point itself,
-    // i.e. MED when route was just loaded). The next physical CP the
-    // robot is heading to is therefore idx+1.
-    String next = routeStepIdAt(g_activeRoute, g_routeIdx + 1);
-    if (!next.length()) next = routeStepIdAt(g_activeRoute, g_routeIdx);
-    if (!next.length()) next = g_lastNodeId;
+    String next = routeStepIdAt(s_snap.activeRoute, s_snap.routeIdx + 1);
+    if (!next.length()) next = routeStepIdAt(s_snap.activeRoute, s_snap.routeIdx);
+    if (!next.length()) next = s_snap.lastNodeId;
     String nx  = "Next: "; nx += next.length() ? next : "—";
     drawLine6x10(42, clip(nx, 21).c_str());
-    // Current physical location (last CP scanned by PN532). Useful to
-    // verify the robot is actually reading tags during route execution.
-    String loc = "Loc:  "; loc += g_lastNodeId.length() ? g_lastNodeId : "—";
+    String loc = "Loc:  "; loc += s_snap.lastNodeId.length() ? s_snap.lastNodeId : "—";
     drawLine6x10(52, clip(loc, 21).c_str());
     drawLine6x10(62, "[Line Tracking...]");
 }
 
 static void drawArrivedWaitReturn() {
-    // Header alternates between [ARRIVED] and WAIT RETURN every 500 ms
-    // to draw attention. Buzzer blink window kept independent.
     drawHeaderBar(blink500() ? "[ARRIVED]" : "WAIT RETURN", true);
-    String pt = "Pt: "; pt += g_patientName.length() ? g_patientName : "—";
+    String pt = "Pt: "; pt += s_snap.patientName.length() ? s_snap.patientName : "—";
     drawLine6x10(30, clip(pt, 21).c_str());
     drawLine6x10(42, "Collect your items.");
     drawLine6x10(62, ">> [PRESS] TO RETURN");
@@ -497,18 +542,18 @@ static void drawDone() {
 
 static void drawFollowActive() {
     drawHeaderBar("FOLLOW MODE", true);
-    if (g_followLost && g_followLostUntil && millis() < g_followLostUntil) {
+    if (s_snap.followLost && s_snap.followLostUntil && millis() < s_snap.followLostUntil) {
         if (blink500()) drawLine6x10(30, "!! TAG LOST !!");
         else            drawLine6x10(30, "               ");
-        uint32_t leftMs = g_followLostUntil - millis();
+        uint32_t leftMs = s_snap.followLostUntil - millis();
         char buf[24];
         snprintf(buf, sizeof(buf), "Search... %lus", (unsigned long)(leftMs / 1000UL + 1UL));
         drawLine6x10(42, buf);
     } else {
         drawLine6x10(30, "Tracking Target...");
-        if (g_followTagId >= 0) {
+        if (s_snap.followTagId >= 0) {
             char buf[24];
-            snprintf(buf, sizeof(buf), "Tag: %d  (OK)", g_followTagId);
+            snprintf(buf, sizeof(buf), "Tag: %d  (OK)", s_snap.followTagId);
             drawLine6x10(42, buf);
         } else {
             drawLine6x10(42, "HuskyLens TAG lock");
@@ -521,15 +566,13 @@ static void drawRecovery(const char* status) {
     drawHeaderBar("RECOVERY", false);
     String s = "Status: "; s += status;
     drawLine6x10(30, clip(s, 21).c_str());
-    String cp = "CP: "; cp += g_lastNodeId.length() ? g_lastNodeId : "—";
+    String cp = "CP: "; cp += s_snap.lastNodeId.length() ? s_snap.lastNodeId : "—";
     drawLine6x10(42, clip(cp, 21).c_str());
     drawLine6x10(62, "Auto returning...");
 }
 
 // ---- overlays (drawn on top) --------------------------------------
 static void drawObstacleOverlay() {
-    // Status bar shows mode "[!] OBSTACLE" with battery; body says
-    // "PLEASE CLEAR PATH" centered.
     g_oled.clearBuffer();
     drawHeaderBar(blink500() ? "[!] OBSTACLE" : "  OBSTACLE  ", true);
     drawCentered6x10(38, "PLEASE CLEAR");
@@ -540,9 +583,9 @@ static void drawWrongCpOverlay() {
     g_oled.clearBuffer();
     drawHeaderBar("[!] SYSTEM ERROR", false);
     drawLine6x10(30, "WRONG CHECKPOINT");
-    String exp = "Expected: "; exp += g_wrongCpExp.length() ? g_wrongCpExp : "?";
+    String exp = "Expected: "; exp += s_snap.wrongCpExp.length() ? s_snap.wrongCpExp : "?";
     drawLine6x10(42, clip(exp, 21).c_str());
-    String got = "Read:     "; got += g_wrongCpRecv.length() ? g_wrongCpRecv : "?";
+    String got = "Read:     "; got += s_snap.wrongCpRecv.length() ? s_snap.wrongCpRecv : "?";
     drawLine6x10(54, clip(got, 21).c_str());
     drawLine6x10(64, "Requesting route...");
 }
@@ -550,19 +593,19 @@ static void drawWrongCpOverlay() {
 // ---- main dispatch ------------------------------------------------
 static void oledRender() {
     // Overlays (highest priority). Obstacle is suppressed in FOLLOW_ACTIVE.
-    if (g_wrongCpUntilMs && millis() < g_wrongCpUntilMs) {
+    if (s_snap.wrongCpUntilMs && millis() < s_snap.wrongCpUntilMs) {
         drawWrongCpOverlay();
         g_oled.sendBuffer();
         return;
     }
-    if (g_obstacleActive && g_state != Sys::FOLLOW_ACTIVE) {
+    if (s_snap.obstacleActive && s_snap.state != Sys::FOLLOW_ACTIVE) {
         drawObstacleOverlay();
         g_oled.sendBuffer();
         return;
     }
 
     g_oled.clearBuffer();
-    switch (g_state) {
+    switch (s_snap.state) {
         case Sys::BOOTING:
         case Sys::CONNECTING:
             drawBootOrConnecting();            break;
@@ -570,8 +613,8 @@ static void oledRender() {
             drawApPortal();                    break;
         case Sys::AUTO_IDLE:
         case Sys::DONE_AT_MED:
-            if (g_state == Sys::DONE_AT_MED) drawDone();
-            else                             drawAutoIdle();
+            if (s_snap.state == Sys::DONE_AT_MED) drawDone();
+            else                                  drawAutoIdle();
             break;
         case Sys::WAIT_START_OUTBOUND:
             drawWaitStartOutbound();           break;
@@ -607,8 +650,10 @@ static void oledRender() {
     g_oled.sendBuffer();
 }
 
-// Back-compat wrapper so `enter()` still compiles; arg is no longer used.
-static void oledShow(const String& = "") { oledRender(); }
+// Back-compat wrapper so legacy calls compile without blocking
+static void oledShow(const String& = "") {
+    // Non-blocking in FreeRTOS: Task_UI_Display runs at 10 FPS
+}
 
 // --------------------------------------------------------------------
 //  Helpers
@@ -616,7 +661,6 @@ static void oledShow(const String& = "") { oledRender(); }
 static inline void enter(Sys s, const String& detail = "") {
     g_state = s;
     applyRelaysForState(s);   // enforce relay configuration for this state
-    oledShow(detail);
     Serial.printf("[FSM] -> %s  (%s)\n", stateName(s), detail.c_str());
 }
 
@@ -662,6 +706,9 @@ static void onMission(const String& outboundCompact,
                       const String& missionId,
                       const String& patientName,
                       const String& destLabel) {
+    FsmLockGuard lock(200);
+    if (!lock) return;
+
     g_pendingOutbound = outboundCompact;
     g_pendingReturn   = returnCompact;
     g_missionId       = missionId;
@@ -697,6 +744,9 @@ static void onMission(const String& outboundCompact,
 static void handleShortPress();   // fwd
 
 static void onStart() {
+    FsmLockGuard lock(100);
+    if (!lock) return;
+
     // Backend may auto-trigger START (rarely used).
     if (g_state == Sys::WAIT_START_OUTBOUND || g_state == Sys::AT_LAST_OUTBOUND) {
         handleShortPress();
@@ -704,6 +754,9 @@ static void onStart() {
 }
 
 static void onCancel() {
+    FsmLockGuard lock(100);
+    if (!lock) return;
+
     bool valid = (g_state == Sys::EXECUTING_OUTBOUND ||
                   g_state == Sys::EXECUTING_RETURN   ||
                   g_state == Sys::EXECUTING_RECOVERY ||
@@ -715,6 +768,9 @@ static void onCancel() {
 }
 
 static void onReturnRoute(const String& routeCompact) {
+    FsmLockGuard lock(200);
+    if (!lock) return;
+
     // Backend response to robot/return_request — overrides any cached
     // return leg and is also used as the recovery route.
     if (g_state == Sys::AT_LAST_OUTBOUND) {
@@ -742,6 +798,9 @@ static void onReturnRoute(const String& routeCompact) {
 //          <OBSTACLE:1|0>, <LINE_FOUND>, <LINE_LOCKED>
 // --------------------------------------------------------------------
 static void onUartFrame(const String& cmd, const String& data) {
+    FsmLockGuard lock(100);
+    if (!lock) return;
+
     Serial.printf("[UART<-] %s : %s\n", cmd.c_str(), data.c_str());
 
     if (cmd == "OBSTACLE") {
@@ -1148,8 +1207,19 @@ void setup() {
     MqttCfg::setCallbacks(onMission, onStart, onCancel, onReturnRoute);
 
     relaysAuto();                                          // confirm Auto state
-    // Stay in CONNECTING until MQTT is actually connected (handled in loop()).
+    // Stay in CONNECTING until MQTT is actually connected (handled in Task_Network).
     enter(Sys::CONNECTING, "MQTT...");
+
+    // Spawn FreeRTOS Tasks across Core 0 and Core 1
+    // Core 0: Network Engine (WiFi, MQTT, Telnet, OTA)
+    xTaskCreatePinnedToCore(Task_Network,    "Task_Network",    8192, nullptr, 1, nullptr, 0);
+
+    // Core 1: Deterministic Control & UI
+    xTaskCreatePinnedToCore(Task_UART_Link,  "Task_UART_Link",  4096, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(Task_FSM_Logic,  "Task_FSM_Logic",  4096, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(Task_UI_Display, "Task_UI_Display", 4096, nullptr, 1, nullptr, 1);
+
+    Serial.println("[RTOS] All 4 Tasks started successfully across Core 0 and Core 1!");
 }
 
 // --------------------------------------------------------------------
@@ -1158,11 +1228,13 @@ void setup() {
 // --------------------------------------------------------------------
 static void openConfigPortalAndRestart(const char* reason) {
     Serial.printf("[NET] opening config portal: %s\n", reason);
-    g_state = Sys::WIFI_AP_PORTAL;
+    if (lockFsm(100)) {
+        g_state = Sys::WIFI_AP_PORTAL;
+        s_snap.state = Sys::WIFI_AP_PORTAL;
+        unlockFsm();
+    }
     oledRender();
     g_wm.setConfigPortalTimeout(0);
-    // Reuse the single shared MQTT-host parameter (already added during
-    // runWifiManager; ensureMqttHostParamAdded() is a no-op the 2nd time).
     ensureMqttHostParamAdded();
     g_wm.startConfigPortal(WM_AP_SSID, WM_AP_PASS);
     persistMqttHostFromParam();
@@ -1170,111 +1242,196 @@ static void openConfigPortalAndRestart(const char* reason) {
     ESP.restart();
 }
 
-// --------------------------------------------------------------------
-void loop() {
-    SerialAndTelnet.handle();
-    ArduinoOTA.handle();
-    MqttCfg::loop();
-    g_uart.loop();
-    beepService();
-    relayHeartbeat();
-    batteryService();
+// ====================================================================
+//  FreeRTOS Tasks Implementation
+// ====================================================================
 
-    // ---- Boot-time MQTT gate ------------------------------------------
-    // Do not enter AUTO_IDLE until MQTT is actually connected. If it
-    // fails to connect within 10s after boot, open the captive portal
-    // so the user can fix WiFi / broker settings.
+// Core 0: Network Stack, MQTT, Telnet, OTA, Backend Heartbeat
+void Task_Network(void* pvParameters) {
+    Serial.printf("[RTOS] Task_Network running on Core %d, Priority %d\n",
+                  xPortGetCoreID(), uxTaskPriorityGet(NULL));
+    static uint32_t tHb = 0;
     static uint32_t sMqttWaitStart = millis();
-    if (g_state == Sys::CONNECTING) {
-        if (MqttCfg::isConnected()) {
-            enter(Sys::AUTO_IDLE, "ready");
-        } else if (millis() - sMqttWaitStart > 10000) {
-            openConfigPortalAndRestart("MQTT timeout 10s");
+
+    while (true) {
+        SerialAndTelnet.handle();
+        ArduinoOTA.handle();
+        MqttCfg::loop();
+
+        // Boot-time MQTT gate: 10s timeout triggers captive portal
+        bool isConnecting = false;
+        if (lockFsm(50)) {
+            isConnecting = (g_state == Sys::CONNECTING);
+            unlockFsm();
         }
-    } else {
-        // Keep the timer aligned for any future re-entry into CONNECTING.
-        sMqttWaitStart = millis();
+
+        if (isConnecting) {
+            if (MqttCfg::isConnected()) {
+                if (lockFsm(50)) {
+                    enter(Sys::AUTO_IDLE, "ready");
+                    unlockFsm();
+                }
+            } else if (millis() - sMqttWaitStart > 10000) {
+                openConfigPortalAndRestart("MQTT timeout 10s");
+            }
+        } else {
+            sMqttWaitStart = millis();
+        }
+
+        // Periodic heartbeat to backend (every 3s while MQTT up)
+        if (MqttCfg::isConnected() && millis() - tHb > 3000) {
+            tHb = millis();
+            String lastNode;
+            String modeStr = "auto";
+            int batt = -1;
+
+            if (lockFsm(50)) {
+                lastNode = g_lastNodeId;
+                batt = g_battPct;
+                switch (g_state) {
+                    case Sys::FOLLOW_ACTIVE:
+                        modeStr = "follow"; break;
+                    case Sys::FOLLOW_REC_START:
+                    case Sys::FOLLOW_REC_LINE_SEARCH:
+                    case Sys::FOLLOW_REC_APPROACH:
+                    case Sys::FOLLOW_REC_TRACK_TO_CP:
+                    case Sys::FOLLOW_REC_WEB_WAIT:
+                    case Sys::FOLLOW_REC_RUN_ROUTE:
+                    case Sys::FOLLOW_REC_DONE:
+                        modeStr = "follow_recovery"; break;
+                    case Sys::AUTO_IDLE:
+                    case Sys::DONE_AT_MED:
+                        modeStr = "idle"; break;
+                    default:
+                        modeStr = "auto"; break;
+                }
+                unlockFsm();
+            }
+            MqttCfg::publishHello(lastNode, modeStr, batt);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
 
-    BtnEvent ev = g_btn.poll();
-    if      (ev == BtnEvent::SHORT_PRESS) handleShortPress();
-    else if (ev == BtnEvent::LONG_PRESS)  handleLongPress();
+// Core 1 (High Priority): STM32 UART Link Parser & Watchdog
+void Task_UART_Link(void* pvParameters) {
+    Serial.printf("[RTOS] Task_UART_Link running on Core %d, Priority %d\n",
+                  xPortGetCoreID(), uxTaskPriorityGet(NULL));
+    while (true) {
+        g_uart.loop();
 
-    // ---- Deferred <MODE:FOLLOW> after HuskyLens warm-up (3 s) -------
-    if (g_pendingFollowSendAt && millis() >= g_pendingFollowSendAt) {
-        g_pendingFollowSendAt = 0;
-        g_uart.send("MODE", "FOLLOW");
-        Serial.println("[FOLLOW] HuskyLens warm-up done → MODE:FOLLOW sent");
-    }
-
-    // ---- STM32 link watchdog (no <HB> for >5 s ⇒ link DOWN) ---------
-    {
+        // STM32 link watchdog (no <HB> for >5s => link DOWN)
         const uint32_t now = millis();
         if (g_slaveLinkOk && (now - g_lastSlaveHbMs > 5000)) {
-            g_slaveLinkOk = false;
+            if (lockFsm(50)) {
+                g_slaveLinkOk = false;
+                unlockFsm();
+            }
             Serial.println("[LINK] STM32 link DOWN — no HB for >5s");
         }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
+}
 
-    // ---- Periodic heartbeat to backend (every 3s while MQTT up) ------
-    static uint32_t tHb = 0;
-    if (MqttCfg::isConnected() && millis() - tHb > 3000) {
-        tHb = millis();
-        // Only report a location once we've actually scanned a tag.
-        // Otherwise leave it empty so the backend keeps whatever value
-        // it already has (do not force-default to START_CHECKPOINT/MED).
-
-        // Map system FSM → simple "mode" string the dashboard expects.
-        // (idle = parked at MED waiting; auto = running a route /
-        // recovering; follow* = HuskyLens follow mode active.)
-        const char* modeStr;
-        switch (g_state) {
-            case Sys::FOLLOW_ACTIVE:
-                modeStr = "follow"; break;
-            case Sys::FOLLOW_REC_START:
-            case Sys::FOLLOW_REC_LINE_SEARCH:
-            case Sys::FOLLOW_REC_APPROACH:
-            case Sys::FOLLOW_REC_TRACK_TO_CP:
-            case Sys::FOLLOW_REC_WEB_WAIT:
-            case Sys::FOLLOW_REC_RUN_ROUTE:
-            case Sys::FOLLOW_REC_DONE:
-                modeStr = "follow_recovery"; break;
-            case Sys::AUTO_IDLE:
-            case Sys::DONE_AT_MED:
-                modeStr = "idle"; break;
-            default:
-                modeStr = "auto"; break;
-        }
-
-        // Battery percent: read from GPIO35 ADC by batteryService().
-        // -1 until first sample lands → publishHello() will omit the
-        // "pct" field while the filter is still warming up.
-        const int batteryPct = g_battPct;
-
-        MqttCfg::publishHello(g_lastNodeId, String(modeStr), batteryPct);
-    }
-
-    // ---- Obstacle alarm: beep every 400 ms while blocked -----------
+// Core 1 (Medium Priority): AGV Finite State Machine, Buttons, Alarms
+void Task_FSM_Logic(void* pvParameters) {
+    Serial.printf("[RTOS] Task_FSM_Logic running on Core %d, Priority %d\n",
+                  xPortGetCoreID(), uxTaskPriorityGet(NULL));
     static uint32_t tObBeep = 0;
-    if (g_obstacleActive && g_state != Sys::FOLLOW_ACTIVE &&
-        millis() - tObBeep > 400) {
-        tObBeep = millis();
-        digitalWrite(PIN_BUZZER, HIGH); delay(60); digitalWrite(PIN_BUZZER, LOW);
-    }
 
-    // ---- Lost-tag alarm: 30 s buzzer pulse train while in Follow ---
-    if (g_state == Sys::FOLLOW_ACTIVE && g_followLost && g_followLostUntil) {
-        if (millis() >= g_followLostUntil) {
-            // Window expired — silence the buzzer but keep the lost
-            // flag so OLED still reflects the situation.
-            g_followLostUntil = 0;
-            digitalWrite(PIN_BUZZER, LOW);
-        } else if ((int32_t)(millis() - g_followLostBeepNext) >= 0) {
-            g_followLostBeepNext = millis() + 500;     // pulse every 500 ms
-            digitalWrite(PIN_BUZZER, HIGH); delay(120); digitalWrite(PIN_BUZZER, LOW);
+    while (true) {
+        // 1. Button events
+        BtnEvent ev = g_btn.poll();
+        if (ev == BtnEvent::SHORT_PRESS) {
+            FsmLockGuard lock(100);
+            if (lock) handleShortPress();
+        } else if (ev == BtnEvent::LONG_PRESS) {
+            FsmLockGuard lock(100);
+            if (lock) handleLongPress();
         }
-    }
 
-    static uint32_t tOled = 0;
-    if (millis() - tOled > 120) { tOled = millis(); oledRender(); }
+        // 2. Deferred <MODE:FOLLOW> after HuskyLens warm-up (3s)
+        if (g_pendingFollowSendAt && millis() >= g_pendingFollowSendAt) {
+            g_pendingFollowSendAt = 0;
+            g_uart.send("MODE", "FOLLOW");
+            Serial.println("[FOLLOW] HuskyLens warm-up done → MODE:FOLLOW sent");
+        }
+
+        // 3. Periodic services
+        batteryService();
+        relayHeartbeat();
+        beepService();
+
+        // 4. Obstacle alarm: beep every 400ms while blocked
+        bool obst = false;
+        Sys st = Sys::BOOTING;
+        if (lockFsm(20)) {
+            obst = g_obstacleActive;
+            st = g_state;
+            unlockFsm();
+        }
+        if (obst && st != Sys::FOLLOW_ACTIVE && millis() - tObBeep > 400) {
+            tObBeep = millis();
+            beepStart(60);
+        }
+
+        // 5. Lost-tag alarm: 30s pulse train while in Follow
+        bool fLost = false;
+        uint32_t fUntil = 0;
+        if (lockFsm(20)) {
+            fLost = g_followLost;
+            fUntil = g_followLostUntil;
+            st = g_state;
+            unlockFsm();
+        }
+        if (st == Sys::FOLLOW_ACTIVE && fLost && fUntil) {
+            if (millis() >= fUntil) {
+                if (lockFsm(20)) {
+                    g_followLostUntil = 0;
+                    unlockFsm();
+                }
+                digitalWrite(PIN_BUZZER, LOW);
+            } else if ((int32_t)(millis() - g_followLostBeepNext) >= 0) {
+                g_followLostBeepNext = millis() + 500;
+                beepStart(120);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// Core 1 (Low Priority): OLED Display Render Task (10 FPS)
+void Task_UI_Display(void* pvParameters) {
+    Serial.printf("[RTOS] Task_UI_Display running on Core %d, Priority %d\n",
+                  xPortGetCoreID(), uxTaskPriorityGet(NULL));
+    while (true) {
+        if (lockFsm(50)) {
+            s_snap.state            = g_state;
+            s_snap.battPct          = g_battPct;
+            s_snap.patientName      = g_patientName;
+            s_snap.destLabel        = g_destLabel;
+            s_snap.activeRoute      = g_activeRoute;
+            s_snap.routeIdx         = g_routeIdx;
+            s_snap.lastNodeId       = g_lastNodeId;
+            s_snap.obstacleActive   = g_obstacleActive;
+            s_snap.followLost       = g_followLost;
+            s_snap.followLostUntil  = g_followLostUntil;
+            s_snap.followTagId      = g_followTagId;
+            s_snap.wrongCpUntilMs   = g_wrongCpUntilMs;
+            s_snap.wrongCpExp       = g_wrongCpExp;
+            s_snap.wrongCpRecv      = g_wrongCpRecv;
+            unlockFsm();
+        }
+        oledRender();
+        vTaskDelay(pdMS_TO_TICKS(100)); // 10 FPS
+    }
+}
+
+// --------------------------------------------------------------------
+void loop() {
+    // Default loopTask yields to FreeRTOS scheduler
+    vTaskDelay(pdMS_TO_TICKS(1000));
 }

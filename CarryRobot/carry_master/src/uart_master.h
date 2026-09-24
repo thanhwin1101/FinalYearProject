@@ -4,6 +4,8 @@
 //  Uses Serial2 on ESP32 @ 115200
 // ====================================================================
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "config.h"
 
 #define UART_STM32 Serial2
@@ -14,23 +16,31 @@ class UartMaster {
 public:
     void begin(UartFrameCb cb) {
         _cb = cb;
+        if (!_txMutex) {
+            _txMutex = xSemaphoreCreateMutex();
+        }
         UART_STM32.begin(UART_STM32_BAUD, SERIAL_8N1, UART_STM32_RX, UART_STM32_TX);
         _buf.reserve(UART_FRAME_MAX);
     }
 
     // --- Send "<CMD|CRC>" or "<CMD:DATA|CRC>" (NFR-06 CRC8) -----------
+    // Thread-safe: protected by FreeRTOS mutex across Core 0 and Core 1
     void send(const String& cmd) {
+        if (_txMutex) xSemaphoreTake(_txMutex, portMAX_DELAY);
         uint8_t c = _crc8(cmd.c_str(), cmd.length());
         char hex[3]; snprintf(hex, sizeof(hex), "%02X", c);
         UART_STM32.print('<'); UART_STM32.print(cmd);
         UART_STM32.print('|'); UART_STM32.print(hex); UART_STM32.print('>');
+        if (_txMutex) xSemaphoreGive(_txMutex);
     }
     void send(const String& cmd, const String& data) {
+        if (_txMutex) xSemaphoreTake(_txMutex, portMAX_DELAY);
         String content = cmd + ":" + data;
         uint8_t c = _crc8(content.c_str(), content.length());
         char hex[3]; snprintf(hex, sizeof(hex), "%02X", c);
         UART_STM32.print('<'); UART_STM32.print(content);
         UART_STM32.print('|'); UART_STM32.print(hex); UART_STM32.print('>');
+        if (_txMutex) xSemaphoreGive(_txMutex);
     }
 
     // --- Call every loop to parse incoming frames ----------------------
@@ -72,7 +82,8 @@ private:
         return crc;
     }
 
-    UartFrameCb _cb      = nullptr;
-    bool        _inFrame = false;
-    String      _buf;
+    UartFrameCb       _cb      = nullptr;
+    bool              _inFrame = false;
+    String            _buf;
+    SemaphoreHandle_t _txMutex = nullptr;
 };

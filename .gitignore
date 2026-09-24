@@ -51,3 +51,9 @@ Hospital Dashboard/Frontend/dist/
 # ===== Misc =====
 *.swp
 *.swo
+
+# ===== Language Server & Compile Commands =====
+compile_commands.json
+.clangd/
+.cache/
+
